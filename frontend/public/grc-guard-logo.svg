@@ -1,0 +1,10 @@
+<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">GRC Guard AI logo</title>
+  <desc id="desc">A shield and compliance check mark inside a dark square.</desc>
+  <rect width="160" height="160" rx="32" fill="#09090B"/>
+  <rect x="18" y="18" width="124" height="124" rx="26" fill="#18181B" stroke="#3F3F46" stroke-width="2"/>
+  <path d="M80 34L116 48V75C116 99.7 101.2 119.7 80 128C58.8 119.7 44 99.7 44 75V48L80 34Z" fill="#FAFAFA"/>
+  <path d="M80 45L105 54.8V75.2C105 93.1 95.2 108.1 80 115.4C64.8 108.1 55 93.1 55 75.2V54.8L80 45Z" fill="#09090B"/>
+  <path d="M68 78.5L76.2 86.7L94 66.8" stroke="#FAFAFA" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M48 126H112" stroke="#71717A" stroke-width="4" stroke-linecap="round"/>
+</svg>

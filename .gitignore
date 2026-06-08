@@ -1,0 +1,50 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+!.env*.example
+backend/.env
+frontend/.env.local
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/venv/
+venv/
+.venv/
+
+# Build outputs and caches
+.next/
+frontend/.next/
+dist/
+build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases, uploads, and generated runtime data
+*.db
+backend/*.db
+backend/uploads/
+backend/temp_uploads/
+uploads/
+temp_uploads/
+
+# Logs and local run output
+*.log
+*_stdout.txt
+*_stderr.txt
+clerk_stdout.txt
+clerk_stderr.txt
+backend_stdout.txt
+backend_stderr.txt
+frontend_stdout.txt
+frontend_stderr.txt
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
