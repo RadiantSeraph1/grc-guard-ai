@@ -9,20 +9,31 @@ import {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
 
+const DEFAULT_STATS = {
+  compliance_score: 0,
+  average_residual_risk: 0,
+  failed_controls_count: 0,
+  warning_controls_count: 0,
+  passing_controls_count: 0,
+  total_controls_count: 0,
+  active_integrations: 0,
+  total_integrations: 0,
+  days_until_next_audit: 0
+};
+
+async function fetchJsonOrThrow(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.detail || `Request failed with ${response.status}`);
+  }
+  return data;
+}
+
 export default function DashboardPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
-  const [stats, setStats] = useState({
-    compliance_score: 87,
-    average_residual_risk: 12.4,
-    failed_controls_count: 3,
-    warning_controls_count: 2,
-    passing_controls_count: 5,
-    total_controls_count: 10,
-    active_integrations: 3,
-    total_integrations: 5,
-    days_until_next_audit: 18
-  });
+  const [stats, setStats] = useState(DEFAULT_STATS);
   
   const [frameworks, setFrameworks] = useState([]);
   const [integrations, setIntegrations] = useState([]);
@@ -36,48 +47,27 @@ export default function DashboardPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       
-      const statsRes = await fetch(`${API_BASE_URL}/api/dashboard/stats`, { headers });
-      const statsData = await statsRes.json();
-      setStats(statsData);
+      const statsData = await fetchJsonOrThrow(`${API_BASE_URL}/api/dashboard/stats`, { headers });
+      setStats({ ...DEFAULT_STATS, ...(statsData && !Array.isArray(statsData) ? statsData : {}) });
 
-      const fwRes = await fetch(`${API_BASE_URL}/api/frameworks`, { headers });
-      const fwData = await fwRes.json();
-      setFrameworks(fwData);
+      const fwData = await fetchJsonOrThrow(`${API_BASE_URL}/api/frameworks`, { headers });
+      setFrameworks(Array.isArray(fwData) ? fwData : []);
 
-      const intRes = await fetch(`${API_BASE_URL}/api/integrations`, { headers });
-      const intData = await intRes.json();
-      setIntegrations(intData);
+      const intData = await fetchJsonOrThrow(`${API_BASE_URL}/api/integrations`, { headers });
+      setIntegrations(Array.isArray(intData) ? intData : []);
 
-      const logsRes = await fetch(`${API_BASE_URL}/api/logs`, { headers });
-      const logsData = await logsRes.json();
-      setActivities(logsData.slice(0, 5));
+      const logsData = await fetchJsonOrThrow(`${API_BASE_URL}/api/logs`, { headers });
+      setActivities(Array.isArray(logsData) ? logsData.slice(0, 5) : []);
 
-      const deptRes = await fetch(`${API_BASE_URL}/api/departments`, { headers });
-      const deptData = await deptRes.json();
+      const deptData = await fetchJsonOrThrow(`${API_BASE_URL}/api/departments`, { headers });
       setDepartments(Array.isArray(deptData) ? deptData : []);
     } catch (err) {
-      console.warn("FastAPI backend not responding, loading dashboard placeholder values.");
-      setFrameworks([
-        { id: "basel-iii", name: "Basel III Capital & Liquidity", code: "BASEL-III", readiness: 50, controls_count: 2 },
-        { id: "cbest", name: "CBEST Threat Intelligence", code: "CBEST", readiness: 100, controls_count: 1 },
-        { id: "gdpr", name: "EU General Data Protection Regulation", code: "GDPR", readiness: 50, controls_count: 2 },
-        { id: "soc-2", name: "SOC 2 Type II Security", code: "SOC-2", readiness: 25, controls_count: 3 }
-      ]);
-      setIntegrations([
-        { id: "aws", name: "Amazon Web Services", category: "Cloud", status: "Connected", last_sync: Math.floor(Date.now() / 1000) - 3600 },
-        { id: "okta", name: "Okta Identity Manager", category: "Identity", status: "Connected", last_sync: Math.floor(Date.now() / 1000) - 1200 },
-        { id: "github", name: "GitHub Developer Portal", category: "Developer", status: "Disconnected", last_sync: null }
-      ]);
-      setActivities([
-        { id: "1", timestamp: Math.floor(Date.now() / 1000) - 300, category: "CBEST Threat Modeling", decision: "VIOLATION", scanned_text: "SWIFT Gateway impersonation threat", justification: { severity: "CRITICAL", summary: "Impersonation alert on gateway." } },
-        { id: "2", timestamp: Math.floor(Date.now() / 1000) - 3600, category: "Basel III Capital", decision: "COMPLIANT", scanned_text: "CET1 Capital check value 7.5%", justification: { severity: "INFO", summary: "CET1 Capital ratio satisfies Basel III." } }
-      ]);
-      setDepartments([
-        { name: "Compliance", users_count: 1, controls_count: 3, risks_count: 2, passing_controls: 1 },
-        { name: "Security", users_count: 1, controls_count: 2, risks_count: 1, passing_controls: 1 },
-        { name: "Technology", users_count: 1, controls_count: 2, risks_count: 1, passing_controls: 0 },
-        { name: "People Operations", users_count: 1, controls_count: 1, risks_count: 0, passing_controls: 1 }
-      ]);
+      console.warn("Dashboard API unavailable; showing an empty dashboard.", err);
+      setStats(DEFAULT_STATS);
+      setFrameworks([]);
+      setIntegrations([]);
+      setActivities([]);
+      setDepartments([]);
     } finally {
       setLoading(false);
     }

@@ -29,20 +29,17 @@ export default function EvidencePage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/controls`, { headers });
-      const ctrlData = await res.json();
-      setControls(ctrlData);
+      const ctrlData = res.ok ? await res.json() : [];
+      setControls(Array.isArray(ctrlData) ? ctrlData : []);
 
       // Fetch evidence list from database
       const evRes = await fetch(`${API_BASE_URL}/api/evidence`, { headers });
+      if (!evRes.ok) throw new Error(`HTTP ${evRes.status}`);
       const evData = await evRes.json();
-      setEvidence(evData);
+      setEvidence(Array.isArray(evData) ? evData : []);
     } catch (err) {
-      console.warn("FastAPI backend not active, loading baseline placeholders.");
-      setEvidence([
-        { id: "ev-01", title: "AWS RDS Encryption Configuration Export", type: "Config", file_name: "db_enc_config.json", file_size: "412 B", freshness: "Expired", upload_date: "2026-05-05", control_code: "GDPR-PII-01" },
-        { id: "ev-02", title: "Okta MFA Enrolled Factor Status Report", type: "Report", file_name: "okta_mfa_roster.xlsx", file_size: "42 KB", freshness: "Current", upload_date: "2026-06-03", control_code: "SOC2-MFA-01" },
-        { id: "ev-03", title: "GitHub Core Repo Branch Protection Policies", type: "Snapshot", file_name: "git_branch_protection.json", file_size: "1.2 KB", freshness: "Current", upload_date: "2026-06-04", control_code: "GIT-BR-01" }
-      ]);
+      console.warn("Evidence unavailable; no evidence has been collected yet.");
+      setEvidence([]);
     } finally {
       setLoading(false);
     }

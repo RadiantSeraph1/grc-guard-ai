@@ -36,15 +36,12 @@ export default function TrustPage() {
   const fetchDocuments = async () => {
     try {
       const res = await fetch(`${API_BASE_URL}/api/trust/documents`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setDocuments(data);
+      setDocuments(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.warn("Using fallback local trust documents.");
-      setDocuments([
-        {"id": "doc-soc2", "name": "SOC 2 Type II Compliance Report 2025.pdf", "size": "1.4 MB", "nda_required": true},
-        {"id": "doc-gdpr", "name": "GDPR Compliance Privacy Policy Statement.pdf", "size": "420 KB", "nda_required": false},
-        {"id": "doc-tpm", "name": "GRC Guard TPM Host Boot Attestation Integrity Log.pdf", "size": "150 KB", "nda_required": false}
-      ]);
+      console.warn("Trust documents unavailable; none have been published yet.");
+      setDocuments([]);
     }
   };
 
@@ -110,10 +107,9 @@ export default function TrustPage() {
       const data = await res.json();
       setChatResponses(prev => [...prev, { role: "assistant", text: data.response }]);
     } catch (err) {
-      // offline fallback
-      setChatResponses(prev => [...prev, { 
-        role: "assistant", 
-        text: "Offline Fallback: Our core ledger databases are configured in AWS S3 and encrypted using AES-256 keys. We maintain capital adequacy compliance matching Basel III buffer parameters of 7.0% total." 
+      setChatResponses(prev => [...prev, {
+        role: "assistant",
+        text: "The Trust Center assistant is currently unavailable. Please try again once the backend and an AI provider are configured."
       }]);
     } finally {
       setSendingChat(false);

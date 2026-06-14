@@ -31,7 +31,7 @@ from seed import seed_db
 load_dotenv()
 
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
-DEFAULT_COMPANY_NAME = os.environ.get("DEFAULT_COMPANY_NAME", "ARB Apex Bank")
+DEFAULT_COMPANY_NAME = os.environ.get("DEFAULT_COMPANY_NAME", "Your Organization")
 SUPER_ADMIN_ACCESS_KEY = os.environ.get("SUPER_ADMIN_ACCESS_KEY", "local-super-admin-key")
 SUPER_ADMIN_SESSION_SECRET = os.environ.get("SUPER_ADMIN_SESSION_SECRET", ai_gateway.get_vault_key() or "local-super-admin-session-secret")
 CLERK_SECRET_KEY = os.environ.get("CLERK_SECRET_KEY")
@@ -397,9 +397,6 @@ class SuperAdminDepartmentMoveRequest(BaseModel):
     from_department: str
     to_department: str
 
-class SuperAdminSimulationRequest(BaseModel):
-    scenario: str = "mixed"
-
 # Startup hooks
 @app.on_event("startup")
 def on_startup():
@@ -410,12 +407,15 @@ def on_startup():
 
 @app.get("/api/health")
 def health_check(db: Session = Depends(database.get_db)):
-    has_api_key = bool(os.environ.get("GEMINI_API_KEY"))
-    active_ai = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=DEFAULT_COMPANY_ID).first()
+    active_ai = ai_gateway.get_active_provider_config(db, DEFAULT_COMPANY_ID)
     active_id = active_ai.id if active_ai else "local_evidence"
+    provider_env_key = ai_gateway.get_env_provider_key(active_id)
+    provider_db_key = ai_gateway.get_decrypted_key(active_ai) if active_ai else None
     return {
         "status": "healthy",
-        "gemini_api_configured": has_api_key,
+        "ai_api_configured": bool(provider_env_key or provider_db_key),
+        "groq_api_configured": bool(os.environ.get("GROQ_API_KEY", "").strip()),
+        "gemini_api_configured": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "mode": active_id,
         "clerk_configured": bool(os.environ.get("CLERK_JWKS_URL")),
         "company": DEFAULT_COMPANY_NAME
@@ -569,7 +569,24 @@ def ensure_ai_provider_configs(db: Session, org_id: str) -> list[models.AIProvid
         if provider_id not in existing_ids:
             db.add(models.AIProviderConfig(id=provider_id, org_id=org_id, is_active=(provider_id == "local_evidence" and not has_active)))
     db.commit()
-    return db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
+    configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
+    active = next((config for config in configs if config.is_active), None)
+    groq = next((config for config in configs if config.id == "groq"), None)
+    if (
+        os.environ.get("GROQ_API_KEY", "").strip()
+        and groq
+        and (not active or active.id == "local_evidence")
+        and not groq.is_active
+    ):
+        for config in configs:
+            config.is_active = (config.id == "groq")
+        if not groq.base_url:
+            groq.base_url = "https://api.groq.com/openai/v1/chat/completions"
+        if not groq.model_override:
+            groq.model_override = "llama-3.3-70b-versatile"
+        db.commit()
+        configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
+    return configs
 
 @app.get("/api/super-admin/control-plane")
 def super_admin_control_plane(db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
@@ -786,61 +803,20 @@ def super_admin_update_ai_provider(id: str, request: SuperAdminAIProviderUpdateR
     db.commit()
     return {"status": "success", "active": provider.is_active}
 
-@app.post("/api/super-admin/reset-seed-data")
-def super_admin_reset_seed_data(db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
+@app.post("/api/super-admin/reset-data")
+def super_admin_reset_data(db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
+    """Wipe all operational data back to an empty organization (config scaffolding kept)."""
     org_id = current_user["org_id"] if isinstance(current_user, dict) else current_user.org_id
-    for model in [models.AuditComment, models.PolicyAcknowledgment, models.VectorChunk, models.Evidence, models.Asset, models.Vendor, models.Risk, models.Control, models.Framework, models.Integration, models.Policy]:
+    for model in [models.AuditComment, models.PolicyAcknowledgment, models.VectorChunk, models.Evidence, models.Asset, models.Vendor, models.Risk, models.Control, models.Framework, models.Policy]:
         db.query(model).filter_by(org_id=org_id).delete()
-    db.commit()
-    import seed
-    seed.seed_org_data(db, org_id, DEFAULT_COMPANY_NAME)
-    return {"status": "success", "message": "Operational GRC data was reset to the reference implementation seed."}
-
-@app.post("/api/super-admin/simulation/seed")
-def super_admin_seed_simulation(request: SuperAdminSimulationRequest, db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
-    org_id = current_user["org_id"] if isinstance(current_user, dict) else current_user.org_id
-    vault_key = get_required_vault_key()
-    scenario = request.scenario if request.scenario in ["healthy", "mixed", "degraded"] else "mixed"
-    integrations = db.query(models.Integration).filter_by(org_id=org_id).all()
-    for integration in integrations:
-        integration.credentials = security.encrypt_log(json.dumps({"simulation": True, "scenario": scenario}), vault_key)
-        integration.status = "Configured"
-        integration.last_sync = int(time.time())
-    db.commit()
-    return {"status": "success", "message": f"Simulation scenario '{scenario}' was seeded for {len(integrations)} systems."}
-
-@app.post("/api/super-admin/simulation/run")
-def super_admin_run_simulation(db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
-    org_id = current_user["org_id"] if isinstance(current_user, dict) else current_user.org_id
-    integrations = db.query(models.Integration).filter_by(org_id=org_id).all()
-    for integration in integrations:
-        run_sync_task(integration.id, org_id)
-    return {"status": "success", "message": f"Simulation sync completed for {len(integrations)} systems."}
-
-@app.get("/api/super-admin/simulation/status")
-def super_admin_simulation_status(db: Session = Depends(database.get_db), current_user = Depends(require_super_admin)):
-    org_id = current_user["org_id"] if isinstance(current_user, dict) else current_user.org_id
-    vault_key = ai_gateway.get_vault_key()
-    rows = []
+    # Reset connector catalog rows to Disconnected without removing the catalog.
     for integration in db.query(models.Integration).filter_by(org_id=org_id).all():
-        simulation_enabled = False
-        scenario = None
-        if integration.credentials and vault_key:
-            try:
-                credentials = parse_integration_credentials(security.decrypt_log(integration.credentials, vault_key))
-                simulation_enabled = bool(credentials.get("simulation"))
-                scenario = credentials.get("scenario")
-            except Exception:
-                simulation_enabled = False
-        rows.append({
-            "id": integration.id,
-            "name": integration.name,
-            "status": integration.status,
-            "last_sync": integration.last_sync,
-            "simulation_enabled": simulation_enabled,
-            "scenario": scenario
-        })
-    return {"systems": rows}
+        integration.status = "Disconnected"
+        integration.credentials = None
+        integration.last_sync = None
+        integration.last_audit_summary = None
+    db.commit()
+    return {"status": "success", "message": "All operational data was cleared. The organization is now empty."}
 
 @app.post("/api/ingest")
 async def ingest_document(file: UploadFile = File(...), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
@@ -1080,6 +1056,49 @@ def evaluate_scan_case(text: str, perspective: str, org_id: str, db: Session) ->
         "matched_references": matched_regs
     }
 
+def build_scan_reasoning_trace(
+    request: ScanRequest,
+    matched_regs: list,
+    category: str,
+    decision: str,
+    attributions: list,
+    provider_id: str,
+    provider_status: str
+) -> list[dict]:
+    words = len(request.text.split())
+    return [
+        {
+            "stage": "Input normalization",
+            "status": "completed",
+            "detail": f"Prepared {words} words for a {request.perspective} perspective review."
+        },
+        {
+            "stage": "Evidence retrieval",
+            "status": "completed",
+            "detail": f"Matched {len(matched_regs)} regulatory or evidence chunks from the RAG corpus."
+        },
+        {
+            "stage": "Control classification",
+            "status": "completed",
+            "detail": f"Mapped the scenario to {category} and produced a {decision} verdict."
+        },
+        {
+            "stage": "Attribution scoring",
+            "status": "completed",
+            "detail": f"Calculated {len(attributions)} token-level signals for the XAI heatmap."
+        },
+        {
+            "stage": "AI provider check",
+            "status": provider_status,
+            "detail": f"Used {provider_id} for final synthesis."
+        },
+        {
+            "stage": "Auditor synthesis",
+            "status": "completed",
+            "detail": "Composed the visible justification, remediation guidance, and audit-ready output."
+        }
+    ]
+
 @app.post("/api/scan")
 def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
     """
@@ -1099,6 +1118,8 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
 
     # If active provider is configured and NOT local evidence, query the AI gateway
     active_config = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
+    provider_id = active_config.id if active_config else "local_evidence"
+    provider_status = "completed"
     if active_config and active_config.id != "local_evidence":
         try:
             prompt = f"""
@@ -1129,10 +1150,13 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
             
             # Temporary set config active in singleton context
             res_data = ai_gateway.generate_structured_json(prompt, schema, "You are a senior banking GRC compliance auditor.", org_id=org_id)
-            decision = res_data.get("decision", decision)
-            category = res_data.get("category", category)
+            ai_decision = str(res_data.get("decision", "")).strip().upper()
+            if ai_decision == decision:
+                decision = ai_decision
             raw_explanation = res_data.get("explanation", raw_explanation)
         except Exception as e:
+            provider_status = "fallback"
+            provider_id = "local_evidence"
             print(f"Rerouting to local heuristics due to AI client error: {str(e)}")
 
     # 3. Rebuild local XAI after optional AI-provider override.
@@ -1140,6 +1164,16 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
     justification = xai.generate_auditor_justification(decision, category, matched_regs[0]["content"] if matched_regs else "Standard banking policy guidelines", attributions)
     if raw_explanation:
         justification["reasoning"] = raw_explanation + "\n\n" + justification.get("reasoning", "")
+
+    reasoning_trace = build_scan_reasoning_trace(
+        request,
+        matched_regs,
+        category,
+        decision,
+        attributions,
+        provider_id,
+        provider_status
+    )
         
     # 5. Save Audit Log (Encrypting sensitive fields if BYOK is provided)
     log_id = str(uuid.uuid4())
@@ -1173,6 +1207,7 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
         "category": category,
         "justification": justification,
         "attributions": attributions,
+        "reasoning_trace": reasoning_trace,
         "is_encrypted": bool(is_encrypted)
     }
 
@@ -1596,71 +1631,6 @@ def parse_integration_credentials(raw: str) -> dict:
         parts = raw.split(":")
         return {"parts": parts}
 
-def get_simulated_integration_result(integration_id: str, scenario: str) -> dict:
-    scenario = (scenario or "mixed").lower()
-    healthy = scenario == "healthy"
-    degraded = scenario == "degraded"
-    matrix = {
-        "aws": healthy or (not degraded and False),
-        "github": healthy or (not degraded and False),
-        "okta": healthy or (not degraded and True),
-        "auth0": healthy or (not degraded and True),
-        "jamf": healthy or (not degraded and True),
-        "workday": healthy or (not degraded and True),
-    }
-    compliant = matrix.get(integration_id, healthy)
-    reasons = {
-        "aws": "Simulated AWS audit: production storage encryption is enabled." if compliant else "Simulated AWS audit: one storage resource is missing encryption.",
-        "github": "Simulated GitHub audit: main branch protection and reviews are enforced." if compliant else "Simulated GitHub audit: main branch protection is missing required reviews.",
-        "okta": "Simulated Okta audit: all active users have MFA factors." if compliant else "Simulated Okta audit: privileged users are missing MFA.",
-        "auth0": "Simulated Auth0 audit: MFA enrollment is complete." if compliant else "Simulated Auth0 audit: MFA enrollment gaps found.",
-        "jamf": "Simulated Jamf audit: managed workstations are compliant." if compliant else "Simulated Jamf audit: unmanaged workstation detected.",
-        "workday": "Simulated Workday audit: active workforce training data is current." if compliant else "Simulated Workday audit: training completion is below policy threshold."
-    }
-    return {
-        "compliant": compliant,
-        "reason": reasons.get(integration_id, "Simulated system audit completed."),
-        "details": {"scenario": scenario, "source": "local_simulation"}
-    }
-
-def apply_simulated_result(db: Session, org_id: str, integration_id: str, result: dict):
-    compliant = result.get("compliant", False)
-    control_map = {
-        "aws": "GDPR-PII-01",
-        "github": "GIT-BR-01",
-        "okta": "SOC2-MFA-01",
-        "auth0": "SOC2-MFA-01",
-        "jamf": "SEC-TRAIN-01",
-        "workday": "SEC-TRAIN-01"
-    }
-    control_code = control_map.get(integration_id)
-    control = db.query(models.Control).filter_by(control_code=control_code, org_id=org_id).first() if control_code else None
-    if control:
-        control.status = "Passing" if compliant else ("Warning" if integration_id in ["okta", "auth0", "jamf", "workday"] else "Failing")
-        control.last_tested = int(time.time())
-        evidence_id = f"sim_ev_{integration_id}_{org_id}"
-        evidence = db.query(models.Evidence).filter_by(id=evidence_id, org_id=org_id).first()
-        if not evidence:
-            evidence = models.Evidence(
-                id=evidence_id,
-                org_id=org_id,
-                title=f"Simulated {integration_id.upper()} Evidence",
-                file_path=f"simulation://{integration_id}",
-                file_size=len(result.get("reason", "")),
-                freshness="Current" if compliant else "Expiring",
-                upload_time=int(time.time()),
-                control_id=control.id
-            )
-            db.add(evidence)
-        else:
-            evidence.file_size = len(result.get("reason", ""))
-            evidence.freshness = "Current" if compliant else "Expiring"
-            evidence.upload_time = int(time.time())
-            evidence.control_id = control.id
-    asset = db.query(models.Asset).filter_by(integration_id=integration_id, org_id=org_id).first()
-    if asset:
-        asset.compliance_status = "Passing" if compliant else "Failing"
-
 @app.post("/api/integrations/connect")
 def connect_integration(request: IntegrationConnectRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
     integration = db.query(models.Integration).filter_by(id=request.id, org_id=current_user.org_id).first()
@@ -1693,16 +1663,8 @@ def run_sync_task(integration_id: str, org_id: str):
             
         compliant = True
         reason = "Sync completed."
-        parsed_credentials = parse_integration_credentials(creds_str)
-        if parsed_credentials.get("simulation"):
-            result = get_simulated_integration_result(integration_id, parsed_credentials.get("scenario", "mixed"))
-            compliant = result.get("compliant", False)
-            reason = result.get("reason", "Simulated sync completed.")
-            apply_simulated_result(db, org_id, integration_id, result)
-            integration.status = "Connected" if compliant else "Error"
-            db.commit()
-            return
-        
+        creds = parse_integration_credentials(creds_str)
+
         if integration_id == "aws":
             if creds_str:
                 creds = parse_integration_credentials(creds_str)
@@ -1809,7 +1771,61 @@ def run_sync_task(integration_id: str, org_id: str):
             else:
                 compliant = False
                 reason = "Auth0 credentials not configured in .env file. Set AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET."
-                
+
+        elif integration_id == "gcp":
+            client = integration_clients.GCPClient(creds.get("service_account_json"), creds.get("project_id"))
+            res = client.audit_bucket_encryption(creds.get("bucket_name") or os.environ.get("GCP_AUDIT_BUCKET", ""))
+            compliant, reason = res.get("compliant", False), res.get("reason", "GCP audit completed.")
+
+        elif integration_id == "azure":
+            client = integration_clients.AzureClient(
+                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"),
+                creds.get("subscription_id"), creds.get("resource_group"), creds.get("account_name"))
+            res = client.audit_storage_account()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Azure audit completed.")
+
+        elif integration_id == "entra":
+            client = integration_clients.EntraClient(
+                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"))
+            res = client.audit_mfa_enrollment()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Entra audit completed.")
+
+        elif integration_id == "google_workspace":
+            client = integration_clients.GoogleWorkspaceClient(
+                creds.get("service_account_json"), creds.get("admin_email"),
+                creds.get("customer", "my_customer"))
+            res = client.audit_2sv_enrollment()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Workspace audit completed.")
+
+        elif integration_id == "crowdstrike":
+            client = integration_clients.CrowdStrikeClient(
+                creds.get("client_id"), creds.get("client_secret"), creds.get("base_url"))
+            res = client.audit_sensor_coverage()
+            compliant, reason = res.get("compliant", False), res.get("reason", "CrowdStrike audit completed.")
+
+        elif integration_id == "snyk":
+            client = integration_clients.SnykClient(creds.get("token"), creds.get("org_id"))
+            res = client.audit_vulnerabilities()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Snyk audit completed.")
+
+        elif integration_id == "jamf":
+            client = integration_clients.JamfClient(
+                creds.get("base_url"), creds.get("client_id"), creds.get("client_secret"),
+                creds.get("username"), creds.get("password"))
+            res = client.audit_disk_encryption()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Jamf audit completed.")
+
+        elif integration_id == "workday":
+            client = integration_clients.WorkdayClient(
+                creds.get("report_url"), creds.get("username"), creds.get("password"))
+            res = client.audit_worker_roster()
+            compliant, reason = res.get("compliant", False), res.get("reason", "Workday audit completed.")
+
+        else:
+            compliant = False
+            reason = f"No live audit handler is configured for connector '{integration_id}'."
+
+        integration.last_audit_summary = reason
         integration.status = "Connected" if compliant else "Error"
         db.commit()
     finally:
@@ -1826,16 +1842,19 @@ def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = D
 @app.get("/api/integrations/{id}/logs")
 def get_integration_logs(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
     integration = db.query(models.Integration).filter_by(id=id, org_id=current_user.org_id).first()
-    status_msg = "Sync completed. Controls status updated successfully."
     level = "SUCCESS"
+    status_msg = (integration.last_audit_summary if integration and integration.last_audit_summary
+                  else "No sync has been run yet for this connector.")
     if integration and integration.status == "Error":
-        status_msg = "Sync failed. Connection error or security controls compliance breach."
         level = "ERROR"
+    elif not integration or not integration.last_audit_summary:
+        level = "INFO"
+    base = int(time.time())
     return [
-        {"timestamp": int(time.time()) - 300, "level": "INFO", "message": f"Establishing secure API channel to {id}..."},
-        {"timestamp": int(time.time()) - 290, "level": "INFO", "message": "Fetching remote security configuration metadata..."},
-        {"timestamp": int(time.time()) - 280, "level": "INFO", "message": "Evaluating compliance controls matching assets..."},
-        {"timestamp": int(time.time()) - 275, "level": level, "message": status_msg}
+        {"timestamp": base - 30, "level": "INFO", "message": f"Establishing secure API channel to {id}..."},
+        {"timestamp": base - 20, "level": "INFO", "message": "Fetching remote security configuration via live vendor API..."},
+        {"timestamp": base - 10, "level": "INFO", "message": "Evaluating compliance against connected control evidence..."},
+        {"timestamp": base, "level": level, "message": status_msg}
     ]
 
 # OAuth redirects and callbacks for integrations
@@ -2445,11 +2464,8 @@ def create_audit_comment(request: CommentCreateRequest, db: Session = Depends(da
 # 11. Security Trust Center
 @app.get("/api/trust/documents")
 def get_trust_documents():
-    return [
-        {"id": "doc-soc2", "name": "SOC 2 Type II Compliance Report 2025.pdf", "size": "1.4 MB", "nda_required": True},
-        {"id": "doc-gdpr", "name": "GDPR Compliance Privacy Policy Statement.pdf", "size": "420 KB", "nda_required": False},
-        {"id": "doc-tpm", "name": "GRC Guard TPM Host Boot Attestation Integrity Log.pdf", "size": "150 KB", "nda_required": False}
-    ]
+    # Trust Center documents are published by the operator; none ship by default.
+    return []
 
 class NDASignRequest(BaseModel):
     company_name: str
@@ -2474,25 +2490,26 @@ class AgentQueryRequest(BaseModel):
     agent_id: str
     prompt: str
 
+# Map the UI's agent ids to the agno agent ids defined in ai_agents.AGENT_DEFINITIONS.
+AGENT_ID_MAP = {
+    "compliance_agent": "compliance-agent",
+    "tprm_agent": "tprm-agent",
+    "trust_agent": "customer-trust-agent",
+    "risk_agent": "risk-propagation-agent",
+}
+
 @app.post("/api/ai/agent-query")
 def query_ai_agent(request: AgentQueryRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
-    if request.agent_id == "compliance_agent":
-        agent = ai_agents.ComplianceAgent()
-        response = agent.run_audit(request.prompt, db, current_user.org_id)
-    elif request.agent_id == "tprm_agent":
-        agent = ai_agents.TPRMAgent()
-        response = agent.evaluate_vendor("Custom Vendor Evaluated via Agent", request.prompt, db, org_id=current_user.org_id)
-    elif request.agent_id == "trust_agent":
-        agent = ai_agents.CustomerTrustAgent()
-        response = agent.answer_query(request.prompt, db, current_user.org_id)
-    elif request.agent_id == "risk_agent":
-        agent = ai_agents.AgentForRisk()
-        response = agent.calculate_risk(request.prompt, db, current_user.org_id)
-    else:
-        role = "You are a senior GRC compliance officer."
-        response = ai_gateway.generate_content(request.prompt, role, org_id=current_user.org_id)
-        
-    return {"response": response}
+    agno_agent_id = AGENT_ID_MAP.get(request.agent_id)
+    if not agno_agent_id:
+        # Unknown agent id -> answer with a generic GRC officer persona (no tool steps).
+        response = ai_gateway.generate_content(
+            request.prompt, "You are a senior GRC compliance officer.", org_id=current_user.org_id
+        )
+        return {"response": response, "steps": []}
+
+    result = ai_agents.run_agent_detailed(agno_agent_id, request.prompt, current_user.org_id)
+    return {"response": result["content"], "steps": result.get("steps", [])}
 
 @app.get("/api/ai/trust-graph")
 def get_trust_graph(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):

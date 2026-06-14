@@ -1,16 +1,17 @@
 "use client";
 
-import { SignedIn, SignedOut, SignInButton } from "@clerk/nextjs";
+import { SignedIn, SignedOut } from "@clerk/nextjs";
 import { usePathname } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 import Sidebar from "./Sidebar";
 
-const PUBLIC_ROUTES = new Set(["/super-admin", "/super-admin/login"]);
+const PUBLIC_ROUTES = ["/super-admin", "/super-admin/login", "/sign-in", "/sign-up"];
 
 export default function AppShell({ children }) {
   const pathname = usePathname();
 
-  if (PUBLIC_ROUTES.has(pathname)) {
+  if (PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
     return (
       <div className="app-content flex-1 min-w-0 h-screen min-h-0 overflow-y-auto bg-[#09090b] relative custom-scrollbar">
         {children}
@@ -43,12 +44,12 @@ export default function AppShell({ children }) {
             </div>
 
             <div className="w-full pt-2">
-              <SignInButton
-                mode="modal"
-                className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-950 font-medium py-3 px-4 rounded-xl cursor-pointer shadow-md active:scale-[0.98] transition-all duration-150 text-xs"
+              <Link
+                href="/sign-in"
+                className="block w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-950 font-medium py-3 px-4 rounded-xl cursor-pointer shadow-md active:scale-[0.98] transition-all duration-150 text-xs"
               >
                 Sign In to Dashboard
-              </SignInButton>
+              </Link>
             </div>
 
             <div className="flex items-center justify-center space-x-6 text-[9px] text-zinc-500 uppercase tracking-widest pt-2">

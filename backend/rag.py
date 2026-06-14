@@ -206,29 +206,6 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
     return scored_chunks[:limit]
 
-# Pre-populate sample banking regulations if database is empty for the default company.
-def seed_sample_data():
-    """Seed the database with standard Basel III/IV and SWIFT gateway rules if empty for the default company."""
-    init_db()
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE org_id = ?", (DEFAULT_COMPANY_ID,))
-    count = cursor.fetchone()[0]
-    
-    if count == 0:
-        samples = [
-            ("Basel_III_Capital.pdf", 1, "Basel III capital adequacy requirements stipulate that banks must maintain a minimum Common Equity Tier 1 (CET1) ratio of 4.5% of risk-weighted assets (RWA). A Capital Conservation Buffer of 2.5% is also required, bringing the total CET1 to 7.0%. Credit risk weighted assets are calculated based on counterparty ratings and exposures."),
-            ("Basel_III_Liquidity.pdf", 1, "The Liquidity Coverage Ratio (LCR) requires banks to maintain an ongoing stock of unencumbered High-Quality Liquid Assets (HQLA) that can be converted easily and immediately in private markets into cash to meet liquidity needs for a 30-calendar-day liquidity stress scenario. LCR formula: Stock of HQLA / Total net cash outflows over 30 days >= 100%."),
-            ("CBEST_Threat_Modeling.pdf", 1, "CBEST cyber threat intelligence framework identifies threat actors and maps activities into threat categories: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, and Elevation of Privilege. A SWIFT gateway user perspective maps gateway impersonation as an Information Disclosure threat (exposing transaction detail) rather than Spoofing (which refers to attacker identity deception)."),
-            ("GDPR_Anonymization.pdf", 1, "GDPR Article 25 specifies Data Protection by Design and by Default. Personally Identifiable Information (PII) including name, account number, routing details, and IP address must be pseudonymized or anonymized before processing. Transaction log monitoring must ensure compliance by masking raw fields in database audit records.")
-        ]
-        for filename, page_num, content in samples:
-            cursor.execute(
-                "INSERT INTO document_chunks (org_id, filename, page_number, content, token_count) VALUES (?, ?, ?, ?, ?)",
-                (DEFAULT_COMPANY_ID, filename, page_num, content, len(content.split()))
-            )
-        conn.commit()
-    conn.close()
-
-# Seed database on import
-seed_sample_data()
+# Initialize the RAG corpus schema on import. The corpus starts EMPTY - no
+# sample/demo regulations are seeded. Documents are added via /api/ingest.
+init_db()

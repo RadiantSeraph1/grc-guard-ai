@@ -5,6 +5,10 @@
 !.env*.example
 backend/.env
 frontend/.env.local
+agent-ui/.env.local
+
+# Backed-up demo databases (created when migrating to the empty-data build)
+backend/_demo_db_backup/
 
 # Dependencies
 node_modules/

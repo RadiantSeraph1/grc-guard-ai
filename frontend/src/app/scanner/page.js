@@ -10,12 +10,41 @@ import {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
 
+const LIVE_SCAN_TRACE = [
+  {
+    stage: "Input normalization",
+    detail: "Preparing the submitted text and selected perspective."
+  },
+  {
+    stage: "Evidence retrieval",
+    detail: "Searching the RAG corpus for matching regulations and uploaded evidence."
+  },
+  {
+    stage: "Control classification",
+    detail: "Mapping the scenario to the most relevant banking control family."
+  },
+  {
+    stage: "Attribution scoring",
+    detail: "Calculating the signal terms used in the XAI heatmap."
+  },
+  {
+    stage: "AI provider check",
+    detail: "Using the configured provider or local evidence fallback for synthesis."
+  },
+  {
+    stage: "Auditor synthesis",
+    detail: "Composing the verdict, reasoning summary, and remediation guidance."
+  }
+];
+
 export default function ScannerPage() {
   const { getToken } = useAuth();
   const [scanText, setScanText] = useState("");
   const [perspective, setPerspective] = useState("Standard");
   const [byokKey, setByokKey] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [activeTraceStep, setActiveTraceStep] = useState(0);
+  const [visibleTrace, setVisibleTrace] = useState(LIVE_SCAN_TRACE);
   
   // Scan result state
   const [result, setResult] = useState(null);
@@ -40,11 +69,26 @@ export default function ScannerPage() {
     fetchHistory();
   }, []);
 
+  useEffect(() => {
+    if (!scanning) return undefined;
+
+    setVisibleTrace(LIVE_SCAN_TRACE);
+    setActiveTraceStep(0);
+
+    const interval = window.setInterval(() => {
+      setActiveTraceStep((step) => Math.min(step + 1, LIVE_SCAN_TRACE.length - 1));
+    }, 900);
+
+    return () => window.clearInterval(interval);
+  }, [scanning]);
+
   const handleScan = async (e) => {
     e.preventDefault();
     if (!scanText.trim()) return;
     setScanning(true);
     setResult(null);
+    setVisibleTrace(LIVE_SCAN_TRACE);
+    setActiveTraceStep(0);
 
     try {
       const token = await getToken();
@@ -62,6 +106,10 @@ export default function ScannerPage() {
       });
       const data = await res.json();
       setResult(data);
+      if (data.reasoning_trace?.length) {
+        setVisibleTrace(data.reasoning_trace);
+        setActiveTraceStep(data.reasoning_trace.length);
+      }
       fetchHistory();
     } catch (err) {
       // Offline fallback
@@ -164,7 +212,13 @@ export default function ScannerPage() {
 
         {/* Scan Results Card */}
         <div className="space-y-6">
-          {result ? (
+          {scanning ? (
+            <ReasoningTraceCard
+              trace={visibleTrace}
+              activeStep={activeTraceStep}
+              live
+            />
+          ) : result ? (
             <div className="bg-[#121215] border border-zinc-800 rounded-xl p-6 shadow-sm space-y-6 animate-fadeIn">
               
               {/* Verdict header */}
@@ -179,6 +233,12 @@ export default function ScannerPage() {
                   {result.decision}
                 </span>
               </div>
+
+              <ReasoningTraceCard
+                trace={result.reasoning_trace || visibleTrace}
+                activeStep={(result.reasoning_trace || visibleTrace).length}
+                embedded
+              />
 
               {/* XAI Heatmap */}
               <div className="space-y-2">
@@ -275,5 +335,61 @@ export default function ScannerPage() {
   );
 }
 
+function ReasoningTraceCard({ trace = LIVE_SCAN_TRACE, activeStep = 0, live = false, embedded = false }) {
+  const steps = trace.length ? trace : LIVE_SCAN_TRACE;
 
+  return (
+    <div className={`${embedded ? "bg-[#09090b] border-zinc-800/60 p-4" : "bg-[#121215] border-zinc-800 p-6 shadow-sm"} border rounded-xl space-y-5 animate-fadeIn`}>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">
+            Visible Analysis Trace
+          </span>
+          <h3 className="font-semibold text-zinc-100 text-base mt-1">
+            {live ? "Running Compliance Scan" : "Scan Reasoning Summary"}
+          </h3>
+        </div>
+        {live && (
+          <RotateCw size={16} className="animate-spin text-zinc-400 mt-1 shrink-0" />
+        )}
+      </div>
+
+      <div className="space-y-3">
+        {steps.map((step, idx) => {
+          const completed = !live || idx < activeStep;
+          const active = live && idx === activeStep;
+
+          return (
+            <div
+              key={`${step.stage}-${idx}`}
+              className={`rounded-lg border p-3 transition-all ${
+                active
+                  ? "border-zinc-500 bg-zinc-900/80"
+                  : completed
+                  ? "border-emerald-500/20 bg-emerald-500/5"
+                  : "border-zinc-800 bg-zinc-950/40"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-semibold text-zinc-100">{step.stage}</span>
+                <span className={`text-[9px] uppercase tracking-wider font-bold ${
+                  completed ? "text-emerald-400" : active ? "text-zinc-200" : "text-zinc-600"
+                }`}>
+                  {completed ? "Done" : active ? "Running" : "Queued"}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500 leading-relaxed mt-1">
+                {step.detail}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-[10px] text-zinc-600 leading-relaxed border-t border-zinc-800 pt-3">
+        This is a user-facing audit trace of the workflow stages and evidence used, not private model chain-of-thought.
+      </p>
+    </div>
+  );
+}
 

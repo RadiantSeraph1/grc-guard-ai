@@ -47,7 +47,6 @@ export default function SuperAdminPage() {
   const { getToken } = useAuth();
   const [overview, setOverview] = useState(null);
   const [control, setControl] = useState(null);
-  const [simulation, setSimulation] = useState(null);
   const [session, setSession] = useState(null);
   const [activeTab, setActiveTab] = useState("identity");
   const [loading, setLoading] = useState(true);
@@ -104,19 +103,16 @@ export default function SuperAdminPage() {
     setError("");
     try {
       const headers = await authHeaders();
-      const [overviewRes, controlRes, simulationRes] = await Promise.all([
+      const [overviewRes, controlRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/super-admin/overview`, { headers }),
-        fetch(`${API_BASE_URL}/api/super-admin/control-plane`, { headers }),
-        fetch(`${API_BASE_URL}/api/super-admin/simulation/status`, { headers })
+        fetch(`${API_BASE_URL}/api/super-admin/control-plane`, { headers })
       ]);
       const overviewData = await overviewRes.json().catch(() => ({}));
       const controlData = await controlRes.json().catch(() => ({}));
-      const simulationData = await simulationRes.json().catch(() => ({}));
       if (!overviewRes.ok) throw new Error(overviewData.detail || "Super admin access is required.");
       if (!controlRes.ok) throw new Error(controlData.detail || "Could not load control plane.");
       setOverview(overviewData);
       setControl(controlData);
-      setSimulation(simulationRes.ok ? simulationData : null);
       try {
         const token = await getToken();
         if (token) {
@@ -129,7 +125,6 @@ export default function SuperAdminPage() {
     } catch (err) {
       setOverview(null);
       setControl(null);
-      setSimulation(null);
       setError(err.message || "Super admin access is required.");
     } finally {
       setLoading(false);
@@ -463,46 +458,14 @@ export default function SuperAdminPage() {
             </div>
           </div>
           <div className="space-y-5">
-            <div className="bg-[#121215] border border-zinc-800 rounded-lg p-5 space-y-4">
-              <HeaderInline title="Simulation Lab" subtitle="Seed local systems and run sync tests without real vendor accounts." />
-              <div className="grid grid-cols-3 gap-2">
-                {["healthy", "mixed", "degraded"].map((scenario) => (
-                  <button
-                    key={scenario}
-                    onClick={() => runAction(`seed-${scenario}`, () => apiRequest("/api/super-admin/simulation/seed", { method: "POST", body: JSON.stringify({ scenario }) }))}
-                    className="bg-zinc-950 border border-zinc-800 hover:border-zinc-600 text-zinc-300 rounded-lg py-2 text-[10px] font-semibold capitalize"
-                  >
-                    {scenario}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => runAction("run-simulation", () => apiRequest("/api/super-admin/simulation/run", { method: "POST" }))}
-                className="w-full bg-zinc-100 text-zinc-950 rounded-lg py-2.5 text-xs font-semibold flex items-center justify-center gap-2"
-              >
-                <RefreshCw size={13} /> Run Simulated Sync
-              </button>
-              <div className="space-y-2">
-                {(simulation?.systems || []).map((system) => (
-                  <div key={system.id} className="flex items-center justify-between border border-zinc-850 bg-zinc-950/40 rounded-lg px-3 py-2 text-[10px]">
-                    <div>
-                      <div className="font-semibold text-zinc-200">{system.name}</div>
-                      <div className="text-zinc-600">{system.simulation_enabled ? `Simulation: ${system.scenario}` : "Real credentials"}</div>
-                    </div>
-                    <StatusBadge status={system.status} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
             <div className="bg-[#121215] border border-rose-500/30 rounded-lg p-5 space-y-4">
               <div className="w-10 h-10 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
                 <AlertTriangle size={18} className="text-rose-400" />
               </div>
-              <h3 className="text-sm font-semibold text-zinc-100">Reset Operational Data</h3>
-              <p className="text-xs text-zinc-500 leading-relaxed">Restores controls, risks, vendors, assets, integrations, policies, and evidence to the reference implementation seed. Users and departments are preserved.</p>
-              <button onClick={() => runAction("reset-seed", () => apiRequest("/api/super-admin/reset-seed-data", { method: "POST" }))} className="w-full bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-lg py-2.5 text-xs font-semibold flex items-center justify-center gap-2">
-                <RotateCcw size={13} /> Reset Seed Data
+              <h3 className="text-sm font-semibold text-zinc-100">Reset to Empty</h3>
+              <p className="text-xs text-zinc-500 leading-relaxed">Permanently clears all operational data — controls, risks, vendors, assets, policies, evidence, and the ingested corpus — and resets every connector to Disconnected. Users, departments, and configuration are preserved. The organization returns to an empty state.</p>
+              <button onClick={() => runAction("reset-data", () => apiRequest("/api/super-admin/reset-data", { method: "POST" }))} className="w-full bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-lg py-2.5 text-xs font-semibold flex items-center justify-center gap-2">
+                <RotateCcw size={13} /> Clear All Data
               </button>
             </div>
           </div>

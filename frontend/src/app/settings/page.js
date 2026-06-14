@@ -37,7 +37,9 @@ export default function SettingsPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/settings/ai-providers`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (!Array.isArray(data)) throw new Error("Invalid providers response");
       setProviders(data);
     } catch (err) {
       console.warn("Using fallback local AI providers list.");

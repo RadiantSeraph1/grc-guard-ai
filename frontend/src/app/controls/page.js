@@ -26,23 +26,15 @@ export default function ControlsPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/controls`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setControls(data);
-      setFilteredControls(data);
+      const list = Array.isArray(data) ? data : [];
+      setControls(list);
+      setFilteredControls(list);
     } catch (err) {
-      console.warn("Using fallback local controls dataset.");
-      const fallback = [
-        { id: "basel-iii-01", control_code: "BASEL-CAP-01", title: "CET1 Capital Adequacy Ratio", description: "Verify the bank maintains a CET1 ratio of at least 4.5% + 2.5% conservation buffer (7.0% total) of risk-weighted assets.", frameworks: "basel-iii", status: "Passing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "basel-iii-02", control_code: "BASEL-LIQ-01", title: "Liquidity Coverage Ratio Check", description: "Verify bank holds high-quality liquid assets (HQLA) to cover total net cash outflows over a 30-day stress scenario.", frameworks: "basel-iii", status: "Failing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "cbest-01", control_code: "CBEST-TMT-01", title: "Gateway Impersonation Boundary Enforcement", description: "Ensure systems detect and alert on unauthorized endpoint spoofing and SWIFT routing impersonations.", frameworks: "cbest", status: "Passing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "gdpr-01", control_code: "GDPR-PII-01", title: "Database Encryption at Rest", description: "Customer personal data including names, account numbers, and address details must be encrypted at rest using AES-256.", frameworks: "gdpr,soc-2,iso-27001", status: "Failing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "gdpr-02", control_code: "GDPR-MASK-01", title: "Transaction Log Masking", description: "Transaction logging modules must anonymize or mask raw transaction customer records prior to database insertion.", frameworks: "gdpr", status: "Passing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "soc2-01", control_code: "SOC2-MFA-01", title: "MFA Enforced in Okta Identity Provider", description: "Ensure Okta has mandatory Multi-Factor Authentication enabled for all active and administrator accounts.", frameworks: "soc-2,iso-27001,pci-dss", status: "Warning", owner_id: "user_admin", last_tested: intTime() - 3600 },
-        { id: "github-01", control_code: "GIT-BR-01", title: "Main Branch Protection Rules", description: "GitHub repositories storing GRC configurations must have mandatory branch protection rules (minimum 1 reviewer, status checks).", frameworks: "soc-2,iso-27001", status: "Failing", owner_id: "user_editor", last_tested: intTime() - 3600 },
-        { id: "employee-01", control_code: "SEC-TRAIN-01", title: "Security Awareness Training", description: "Ensure all active users have completed the mandatory security training modules.", frameworks: "soc-2,iso-27001", status: "Warning", owner_id: "user_admin", last_tested: intTime() - 3600 }
-      ];
-      setControls(fallback);
-      setFilteredControls(fallback);
+      console.warn("Controls unavailable; no controls have been defined yet.");
+      setControls([]);
+      setFilteredControls([]);
     } finally {
       setLoading(false);
     }

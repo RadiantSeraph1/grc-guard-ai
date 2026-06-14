@@ -21,17 +21,12 @@ export default function PeoplePage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/people`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setPeople(data);
+      setPeople(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.warn("Using fallback local people catalog.");
-      setPeople([
-        { id: "user_admin", email: "admin@grcguard.io", name: "Alex Carter", role: "Admin", department: "Security", training_completed: true, background_check_passed: true, status: "Active" },
-        { id: "user_editor", email: "compliance-officer@grcguard.io", name: "David Vance", role: "Editor", department: "Compliance", training_completed: true, background_check_passed: true, status: "Active" },
-        { id: "user_auditor", email: "external-auditor@pwc.com", name: "Sarah Jenkins", role: "Auditor", department: "Audit", training_completed: true, background_check_passed: true, status: "Active" },
-        { id: "user_employee", email: "developer@grcguard.io", name: "John Doe", role: "Employee", department: "Engineering", training_completed: false, background_check_passed: true, status: "Active" },
-        { id: "user_employee2", email: "hr-lead@grcguard.io", name: "Jane Smith", role: "Employee", department: "HR", training_completed: true, background_check_passed: true, status: "Active" }
-      ]);
+      console.warn("People unavailable; users are provisioned from Clerk on sign-in.");
+      setPeople([]);
     } finally {
       setLoading(false);
     }

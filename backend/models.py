@@ -87,6 +87,7 @@ class Integration(Base):
     status = Column(String, default="Disconnected") # Connected, Error, Disconnected
     credentials = Column(String, nullable=True) # Encrypted
     last_sync = Column(Integer, nullable=True)
+    last_audit_summary = Column(String, nullable=True) # Human-readable result of the last live sync
 
     organization = relationship("Organization", back_populates="integrations")
 

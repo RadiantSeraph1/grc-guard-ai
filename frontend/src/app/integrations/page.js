@@ -10,6 +10,36 @@ import {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
 
+// Per-connector presentation + credential hints. Connectors themselves come from
+// the backend catalog (/api/integrations); this only drives icons/help text.
+const CONNECTOR_META = {
+  aws: { emoji: "☁️", desc: "Audits S3 bucket encryption and storage security configuration.",
+    label: "AWS Access Credentials", ph: '{"aws_access_key_id":"...","aws_secret_access_key":"...","bucket_name":"..."}' },
+  gcp: { emoji: "🌥️", desc: "Audits GCS bucket encryption and public-access prevention.",
+    label: "GCP Service Account JSON", ph: '{"service_account_json":"{...}","bucket_name":"my-bucket","project_id":"my-proj"}' },
+  azure: { emoji: "🟦", desc: "Audits Storage Account secure-transfer and encryption settings.",
+    label: "Azure Service Principal", ph: '{"tenant_id":"...","client_id":"...","client_secret":"...","subscription_id":"...","resource_group":"...","account_name":"..."}' },
+  okta: { emoji: "🔑", desc: "Retrieves user rosters and verifies MFA factor enrollment.",
+    label: "Okta API Token / Org URL", ph: '{"org_url":"https://dev-xxxxx.okta.com","token":"..."}' },
+  auth0: { emoji: "🛡️", desc: "Audits directory users, MFA Guardian enrollment, login logs, and roles.",
+    label: "Auth0 M2M Credentials", ph: '{"domain":"your-tenant.us.auth0.com","client_id":"...","client_secret":"..."}' },
+  entra: { emoji: "🟦", desc: "Audits Entra ID users and MFA via Microsoft Graph.",
+    label: "Entra (Graph) App Registration", ph: '{"tenant_id":"...","client_id":"...","client_secret":"..."}' },
+  google_workspace: { emoji: "🅖", desc: "Audits Workspace users and 2-Step Verification enrollment.",
+    label: "Workspace Service Account", ph: '{"service_account_json":"{...}","admin_email":"admin@yourco.com"}' },
+  github: { emoji: "💻", desc: "Evaluates branch protection and pull request review rules.",
+    label: "GitHub Personal Access Token", ph: '{"token":"ghp_...","owner":"your-org","repo":"your-repo","branch":"main"}' },
+  snyk: { emoji: "🐶", desc: "Audits open critical/high vulnerabilities across monitored projects.",
+    label: "Snyk API Token + Org", ph: '{"token":"...","org_id":"..."}' },
+  crowdstrike: { emoji: "🦅", desc: "Audits endpoint sensor coverage and detection posture.",
+    label: "CrowdStrike API Client", ph: '{"client_id":"...","client_secret":"...","base_url":"https://api.crowdstrike.com"}' },
+  jamf: { emoji: "📱", desc: "Validates managed Mac enrollment and FileVault disk encryption.",
+    label: "Jamf Pro API Client", ph: '{"base_url":"https://yourorg.jamfcloud.com","client_id":"...","client_secret":"..."}' },
+  workday: { emoji: "👥", desc: "Syncs active worker roster via a RaaS report endpoint.",
+    label: "Workday RaaS Report", ph: '{"report_url":"https://...","username":"ISU","password":"..."}' },
+};
+const metaFor = (id) => CONNECTOR_META[id] || { emoji: "🔌", desc: "Connect this system to pull live compliance evidence.", label: "API Credentials (JSON)", ph: '{"...":"..."}' };
+
 export default function IntegrationsPage() {
   const { getToken } = useAuth();
   const { user } = useUser();
@@ -38,15 +68,8 @@ export default function IntegrationsPage() {
       }
       setIntegrations(data);
     } catch (err) {
-      console.warn("Backend unavailable; showing connector setup list without synthetic connection status.");
-      setIntegrations([
-        { id: "aws", name: "Amazon Web Services", category: "Cloud", status: "Disconnected", last_sync: intTime() - 3600 },
-        { id: "okta", name: "Okta Identity Manager", category: "Identity", status: "Disconnected", last_sync: intTime() - 1200 },
-        { id: "auth0", name: "Auth0 Identity Platform", category: "Identity", status: "Disconnected", last_sync: null },
-        { id: "github", name: "GitHub Developer Portal", category: "Developer", status: "Disconnected", last_sync: null },
-        { id: "jamf", name: "Jamf Pro MDM", category: "EDR", status: "Disconnected", last_sync: null },
-        { id: "workday", name: "Workday HRIS", category: "HRIS", status: "Disconnected", last_sync: null }
-      ]);
+      console.warn("Backend unavailable; the connector catalog could not be loaded.");
+      setIntegrations([]);
     } finally {
       setLoading(false);
     }
@@ -212,7 +235,7 @@ export default function IntegrationsPage() {
             <div className="flex items-start justify-between">
               <div className="flex items-center space-x-3">
                 <div className="w-12 h-12 rounded-xl bg-zinc-900 flex items-center justify-center text-2xl border border-zinc-800 shadow-sm">
-                  {item.id === "aws" ? "☁️" : item.id === "okta" ? "🔑" : item.id === "auth0" ? "🛡️" : item.id === "github" ? "💻" : item.id === "jamf" ? "📱" : "👥"}
+                  {metaFor(item.id).emoji}
                 </div>
                 <div>
                   <h3 className="font-semibold text-zinc-200 text-base leading-snug">{item.name}</h3>
@@ -236,12 +259,7 @@ export default function IntegrationsPage() {
             </div>
 
             <div className="text-xs text-zinc-400 leading-relaxed min-h-[40px]">
-              {item.id === "aws" && "Audits S3 bucket encryption configurations and VPC security group rules."}
-              {item.id === "okta" && "Retrieves user rosters, account states, and verifies MFA enforcement settings."}
-              {item.id === "auth0" && "Audits Auth0 directory users, MFA Guardian enrollment, login logs, and role assignments."}
-              {item.id === "github" && "Evaluates developer source repository protections and pull request review rules."}
-              {item.id === "jamf" && "Validates workstation compliance settings, OS patches, and endpoint training rules."}
-              {item.id === "workday" && "Syncs corporate HR onboarding processes, background check logs, and employee status."}
+              {metaFor(item.id).desc}
             </div>
 
             <div className="flex items-center justify-between pt-4 border-t border-zinc-800/50 text-xs">
@@ -354,20 +372,12 @@ export default function IntegrationsPage() {
               {connectionMode === "api" ? (
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wide">
-                    {activeIntegration.id === "aws" ? "AWS Access Credentials Payload" : activeIntegration.id === "github" ? "GitHub Personal Access Token" : activeIntegration.id === "auth0" ? "Auth0 M2M Credentials" : "Okta API Token / Org URL"}
+                    {metaFor(activeIntegration.id).label}
                   </label>
                   <textarea
                     value={credentials}
                     onChange={(e) => setCredentials(e.target.value)}
-                    placeholder={
-                      activeIntegration.id === "aws" 
-                        ? '{"aws_access_key_id":"...","aws_secret_access_key":"...","bucket_name":"..."}' 
-                        : activeIntegration.id === "github"
-                        ? '{"token":"ghp_...","owner":"your-org","repo":"your-repo","branch":"main"}'
-                        : activeIntegration.id === "auth0"
-                        ? '{"domain":"your-auth0-domain.us.auth0.com","client_id":"...","client_secret":"..."}'
-                        : '{"org_url":"https://dev-xxxxx.okta.com","token":"..."}'
-                    }
+                    placeholder={metaFor(activeIntegration.id).ph}
                     rows={4}
                     className="w-full bg-[#09090b] border border-zinc-800 hover:border-zinc-700 focus:border-zinc-500 text-zinc-100 rounded-lg p-3 text-xs placeholder-zinc-650 focus:outline-none transition-all resize-none font-mono"
                   />

@@ -30,28 +30,17 @@ export default function RisksPage() {
       const headers = { "Authorization": `Bearer ${token}` };
       
       const riskRes = await fetch(`${API_BASE_URL}/api/risks`, { headers });
+      if (!riskRes.ok) throw new Error(`HTTP ${riskRes.status}`);
       const riskData = await riskRes.json();
-      setRisks(riskData);
+      setRisks(Array.isArray(riskData) ? riskData : []);
 
       const ctrlRes = await fetch(`${API_BASE_URL}/api/controls`, { headers });
-      const ctrlData = await ctrlRes.json();
-      setControls(ctrlData);
+      const ctrlData = ctrlRes.ok ? await ctrlRes.json() : [];
+      setControls(Array.isArray(ctrlData) ? ctrlData : []);
     } catch (err) {
-      console.warn("Using fallback local risks dataset.");
-      setRisks([
-        { id: "risk-01", title: "Capital Adequacy Out-of-Compliance", category: "Regulatory", likelihood: 2, impact: 5, inherent_score: 10, residual_score: 5, status: "Mitigated", owner_id: "user_editor", mitigations: [{id: "basel-iii-01", control_code: "BASEL-CAP-01"}] },
-        { id: "risk-02", title: "Liquidity Default Risk under Stress", category: "Operational", likelihood: 3, impact: 4, inherent_score: 12, residual_score: 12, status: "Open", owner_id: "user_editor", mitigations: [] },
-        { id: "risk-03", title: "Unauthorized Access to Core Database", category: "Cyber", likelihood: 4, impact: 5, inherent_score: 20, residual_score: 8, status: "Mitigated", owner_id: "user_admin", mitigations: [{id: "gdpr-01", control_code: "GDPR-PII-01"}] },
-        { id: "risk-04", title: "Insecure Developer Pipeline Injection", category: "Cyber", likelihood: 3, impact: 4, inherent_score: 12, residual_score: 12, status: "Open", owner_id: "user_editor", mitigations: [] },
-        { id: "risk-05", title: "Customer Personal Data Leak (PII)", category: "Compliance", likelihood: 3, impact: 5, inherent_score: 15, residual_score: 15, status: "Open", owner_id: "user_editor", mitigations: [] }
-      ]);
-      setControls([
-        { id: "basel-iii-01", control_code: "BASEL-CAP-01", title: "CET1 Capital Adequacy Ratio" },
-        { id: "basel-iii-02", control_code: "BASEL-LIQ-01", title: "Liquidity Coverage Check" },
-        { id: "gdpr-01", control_code: "GDPR-PII-01", title: "Database Encryption at Rest" },
-        { id: "soc2-01", control_code: "SOC2-MFA-01", title: "MFA Enforced in Okta" },
-        { id: "github-01", control_code: "GIT-BR-01", title: "GitHub branch protection" }
-      ]);
+      console.warn("Risks unavailable; no risks have been registered yet.");
+      setRisks([]);
+      setControls([]);
     } finally {
       setLoading(false);
     }

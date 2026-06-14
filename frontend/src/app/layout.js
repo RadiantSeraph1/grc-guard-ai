@@ -25,8 +25,8 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <ClerkProvider publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}>
-      <html lang="en" className={`${inter.variable} h-full antialiased dark`}>
-        <body className="min-h-full bg-[#09090b] font-sans text-zinc-100 flex overflow-hidden">
+      <html suppressHydrationWarning lang="en" className={`${inter.variable} h-full antialiased dark`}>
+        <body suppressHydrationWarning className="min-h-full bg-[#09090b] font-sans text-zinc-100 flex overflow-hidden">
           <AppShell>{children}</AppShell>
         </body>
       </html>

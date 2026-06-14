@@ -23,15 +23,12 @@ export default function PoliciesPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/policies`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setPolicies(data);
+      setPolicies(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.warn("Using fallback local policies dataset.");
-      setPolicies([
-        { id: "policy-01", title: "Information Security Policy", version: "2.0.1", status: "Approved", acknowledgments: 3, total_employees: 5 },
-        { id: "policy-02", title: "Access Control Policy", version: "1.1.0", status: "Under Review", acknowledgments: 0, total_employees: 5 },
-        { id: "policy-03", title: "Incident Response Plan", version: "1.0.0", status: "Draft", acknowledgments: 0, total_employees: 5 }
-      ]);
+      console.warn("Policies unavailable; no policies have been uploaded yet.");
+      setPolicies([]);
     } finally {
       setLoading(false);
     }

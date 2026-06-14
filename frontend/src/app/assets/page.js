@@ -22,16 +22,12 @@ export default function AssetsPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/assets`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setAssets(data);
+      setAssets(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.warn("Using fallback local asset register.");
-      setAssets([
-        { id: "asset-01", name: "Production Ledger RDS Cluster", type: "Cloud Resource", owner_id: "user_admin", compliance_status: "Failing", is_in_scope: true, integration_id: "aws" },
-        { id: "asset-02", name: "Corporate Git Repo grc-core", type: "Repository", owner_id: "user_editor", compliance_status: "Failing", is_in_scope: true, integration_id: "github" },
-        { id: "asset-03", name: "Workstation MAC-0239", type: "Workstation", owner_id: "user_employee", compliance_status: "Passing", is_in_scope: true, integration_id: "jamf" },
-        { id: "asset-04", name: "Internal Payroll SaaS", type: "SaaS App", owner_id: "user_employee2", compliance_status: "Passing", is_in_scope: false, integration_id: "workday" }
-      ]);
+      console.warn("Assets unavailable; no assets have been registered yet.");
+      setAssets([]);
     } finally {
       setLoading(false);
     }

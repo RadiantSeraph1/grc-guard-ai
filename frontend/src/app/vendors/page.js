@@ -24,15 +24,12 @@ export default function VendorsPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/vendors`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setVendors(data);
+      setVendors(Array.isArray(data) ? data : []);
     } catch (err) {
-      console.warn("Using fallback local vendor catalog.");
-      setVendors([
-        { id: "vendor-01", name: "CoreBankingTech Ltd", tier: "Critical", inherent_risk: "High", residual_risk: "Medium", status: "Approved", last_assessment_date: intTime() - 172800, questionnaire_completed: true, questionnaire_answers: '{"data_encryption":"AES-256 standard on all endpoints","access_control":"Mandatory MFA enforced on administrators","business_continuity":"Disaster recovery hot standby active","risk_level":"Medium"}' },
-        { id: "vendor-02", name: "OfficeSupplies Co", tier: "Low", inherent_risk: "Low", residual_risk: "Low", status: "Approved", last_assessment_date: intTime() - 172800, questionnaire_completed: true, questionnaire_answers: "{}" },
-        { id: "vendor-03", name: "CloudAnalytics Inc", tier: "High", inherent_risk: "High", residual_risk: "High", status: "Under Assessment", last_assessment_date: null, questionnaire_completed: false, questionnaire_answers: "{}" }
-      ]);
+      console.warn("Vendors unavailable; no vendors have been onboarded yet.");
+      setVendors([]);
     } finally {
       setLoading(false);
     }

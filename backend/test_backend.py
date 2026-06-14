@@ -10,19 +10,28 @@ import security
 
 def test_rag_retrieval():
     print("--- Testing RAG Retrieval Accuracy ---")
-    query = "What is the minimum Common Equity Tier 1 CET1 ratio?"
-    results = rag.search_documents(query, limit=2)
-    print(f"Query: '{query}'")
-    print(f"Results found: {len(results)}")
-    for i, r in enumerate(results):
-        print(f" [{i+1}] Source: {r['filename']}, Score: {r['score']}")
-        print(f"     Content snippet: {r['content'][:120]}...")
-    
-    # Assert we found the Basel III capital adequacy chunk
-    assert len(results) > 0, "No results returned."
-    assert "Basel_III_Capital.pdf" in [r['filename'] for r in results] or "Report_Format__21_.pdf" in [r['filename'] for r in results], "Failed to retrieve relevant Basel III docs."
-    print("SUCCESS: RAG retrieval verified.")
-    print()
+    # The corpus starts EMPTY by design, so first ingest a document, then retrieve.
+    import tempfile
+    sample = (
+        "Basel III capital adequacy requirements stipulate that banks must maintain "
+        "a minimum Common Equity Tier 1 (CET1) ratio of 4.5% of risk-weighted assets, "
+        "plus a 2.5% conservation buffer for a 7.0% total."
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+        tmp.write(sample)
+        tmp_path = tmp.name
+    try:
+        rag.ingest_document(tmp_path, "Basel_III_Capital_test.txt", replace_existing=True)
+        query = "What is the minimum Common Equity Tier 1 CET1 ratio?"
+        results = rag.search_documents(query, limit=2)
+        print(f"Query: '{query}' -> {len(results)} results")
+        assert len(results) > 0, "No results returned after ingestion."
+        assert any("Basel_III_Capital_test.txt" == r["filename"] for r in results), \
+            "Failed to retrieve the ingested Basel III document."
+        print("SUCCESS: RAG retrieval verified.")
+        print()
+    finally:
+        os.unlink(tmp_path)
 
 def test_xai_attribution():
     print("--- Testing XAI Attribution Engine ---")

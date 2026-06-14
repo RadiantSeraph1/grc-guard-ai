@@ -2,17 +2,23 @@ import os
 import time
 import jwt
 import httpx
+from dotenv import load_dotenv
 from fastapi import Header, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from database import get_db
 from models import User, Organization, Department
 import seed
 
+# Load .env BEFORE reading any environment variables below. auth.py may be
+# imported before any other module calls load_dotenv(), so without this the
+# Clerk settings would be captured as None and every authed request would 500.
+load_dotenv()
+
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL")
 CLERK_AUDIENCE = os.environ.get("CLERK_AUDIENCE") # Clerk Client ID/Frontend App ID
 CLERK_MOCK_AUTH = os.environ.get("CLERK_MOCK_AUTH", "false").lower() == "true"
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
-DEFAULT_COMPANY_NAME = os.environ.get("DEFAULT_COMPANY_NAME", "ARB Apex Bank")
+DEFAULT_COMPANY_NAME = os.environ.get("DEFAULT_COMPANY_NAME", "Your Organization")
 SUPER_ADMIN_EMAILS = {
     email.strip().lower()
     for email in os.environ.get("SUPER_ADMIN_EMAILS", "superadmin@arbapexbank.example").split(",")

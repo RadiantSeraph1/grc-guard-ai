@@ -26,19 +26,18 @@ export default function AuditPage() {
       const token = await getToken();
       const headers = { "Authorization": `Bearer ${token}` };
       const res = await fetch(`${API_BASE_URL}/api/controls`, { headers });
-      const ctrlData = await res.json();
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await res.json();
+      const ctrlData = Array.isArray(raw) ? raw : [];
       setControls(ctrlData);
-      
+
       if (ctrlData.length > 0) {
         setActiveControl(ctrlData[0]);
         fetchComments(ctrlData[0].id);
       }
     } catch (err) {
-      console.warn("FastAPI offline, loading baseline placeholders.");
-      setControls([
-        { id: "basel-iii-01", control_code: "BASEL-CAP-01", title: "CET1 Capital Adequacy Ratio", status: "Passing" },
-        { id: "gdpr-01", control_code: "GDPR-PII-01", title: "Database Encryption at Rest", status: "Failing" }
-      ]);
+      console.warn("Audit controls unavailable; no controls have been defined yet.");
+      setControls([]);
     } finally {
       setLoading(false);
     }
@@ -52,13 +51,8 @@ export default function AuditPage() {
       const data = await res.json();
       setComments(prev => ({ ...prev, [ctrlId]: data }));
     } catch (err) {
-      // offline fallback
-      setComments(prev => ({ 
-        ...prev, 
-        [ctrlId]: [
-          { id: "1", sender_name: "Sarah Jenkins (Auditor)", comment_text: "Please supply the latest snapshot verifying encryption configuration on your production database.", timestamp: intTime() - 3600 }
-        ] 
-      }));
+      // No offline demo comments; show an empty thread.
+      setComments(prev => ({ ...prev, [ctrlId]: [] }));
     }
   };
 
