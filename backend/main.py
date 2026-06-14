@@ -26,6 +26,7 @@ import rag
 import xai
 import ai_agents
 import s3_storage
+import framework_library
 from seed import seed_db
 
 load_dotenv()
@@ -1828,6 +1829,14 @@ def run_sync_task(integration_id: str, org_id: str):
         integration.last_audit_summary = reason
         integration.status = "Connected" if compliant else "Error"
         db.commit()
+
+        # Bridge the sync result to every imported control this connector tests
+        # (covers all connectors uniformly, including ones with no bespoke block
+        # above) and refresh affected framework readiness.
+        try:
+            framework_library.apply_connector_result(db, org_id, integration_id, compliant)
+        except Exception as e:
+            print(f"Connector->control mapping skipped for {integration_id}: {e}")
     finally:
         db.close()
 
@@ -2568,4 +2577,30 @@ def get_frameworks(db: Session = Depends(database.get_db), current_user: models.
             "controls_count": total_mapped
         })
     return result
+
+
+class FrameworkImportRequest(BaseModel):
+    framework_id: str
+
+
+@app.get("/api/frameworks/library")
+def get_framework_library(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """List the importable framework catalog with per-framework import status."""
+    return framework_library.list_library(db, current_user.org_id)
+
+
+@app.post("/api/frameworks/import")
+def import_framework(request: FrameworkImportRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Import a framework and materialise its controls into the organization."""
+    try:
+        summary = framework_library.import_framework(db, current_user.org_id, request.framework_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"message": f"Imported {summary['name']}.", **summary}
+
+
+@app.delete("/api/frameworks/{framework_id}")
+def delete_framework(framework_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Remove a framework; strips its tag from controls and deletes orphans."""
+    return framework_library.remove_framework(db, current_user.org_id, framework_id)
 
