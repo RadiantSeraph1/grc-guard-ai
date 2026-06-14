@@ -3,6 +3,7 @@ import re
 import sqlite3
 import json
 import csv
+import struct
 from pathlib import Path
 from pypdf import PdfReader
 from dotenv import load_dotenv
@@ -25,11 +26,64 @@ def init_db():
             filename TEXT,
             page_number INTEGER,
             content TEXT,
-            token_count INTEGER
+            token_count INTEGER,
+            embedding BLOB
         )
     """)
+    # Light migration: older databases predate the embedding column.
+    cursor.execute("PRAGMA table_info(document_chunks)")
+    cols = {row[1] for row in cursor.fetchall()}
+    if "embedding" not in cols:
+        cursor.execute("ALTER TABLE document_chunks ADD COLUMN embedding BLOB")
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Embedding (de)serialization + similarity
+# ---------------------------------------------------------------------------
+
+def _pack_embedding(vector):
+    """Serialize a list[float] embedding to compact float32 bytes."""
+    if not vector:
+        return None
+    return struct.pack(f"{len(vector)}f", *vector)
+
+
+def _unpack_embedding(blob):
+    """Deserialize float32 bytes back to a list[float]."""
+    if not blob:
+        return None
+    count = len(blob) // 4
+    if count == 0:
+        return None
+    return list(struct.unpack(f"{count}f", blob))
+
+
+def _embed_chunks(texts):
+    """Embed chunk texts via the AI gateway; returns list or None on failure."""
+    try:
+        import ai_gateway
+        return ai_gateway.embed_texts(texts)
+    except Exception as e:
+        print(f"RAG embedding skipped: {e}")
+        return None
+
+
+def _cosine(a, b):
+    """Cosine similarity between two equal-length vectors (pure Python)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na ** 0.5) * (nb ** 0.5))
 
 def parse_pdf(file_path):
     """Parse PDF and return list of page content."""
@@ -105,22 +159,35 @@ def ingest_document(file_path, filename, org_id=DEFAULT_COMPANY_ID, source_type=
     if existing_count > 0 and replace_existing:
         cursor.execute("DELETE FROM document_chunks WHERE filename = ? AND org_id = ?", (filename, org_id))
         
-    inserted_count = 0
+    # Build all enriched chunks first so embeddings can be computed in one batch.
+    rows = []  # (page_num, enriched_chunk, token_est)
     for page_num, content in pages:
         # We chunk each page if it's too long
         chunks = chunk_text(content, chunk_size=300, overlap=50)
         for chunk in chunks:
             token_est = len(chunk.split())  # Estimate tokens as words
             enriched_chunk = f"[Source Type: {source_type}]\n{chunk}"
-            cursor.execute(
-                "INSERT INTO document_chunks (org_id, filename, page_number, content, token_count) VALUES (?, ?, ?, ?, ?)",
-                (org_id, filename, page_num, enriched_chunk, token_est)
-            )
-            inserted_count += 1
-            
+            rows.append((page_num, enriched_chunk, token_est))
+
+    # Vectorize the chunk texts. Falls back to None (lexical-only) when no
+    # embedding provider is configured or the call fails.
+    embeddings = _embed_chunks([r[1] for r in rows]) if rows else None
+
+    inserted_count = 0
+    for idx, (page_num, enriched_chunk, token_est) in enumerate(rows):
+        blob = None
+        if embeddings and idx < len(embeddings):
+            blob = _pack_embedding(embeddings[idx])
+        cursor.execute(
+            "INSERT INTO document_chunks (org_id, filename, page_number, content, token_count, embedding) VALUES (?, ?, ?, ?, ?, ?)",
+            (org_id, filename, page_num, enriched_chunk, token_est, blob)
+        )
+        inserted_count += 1
+
     conn.commit()
     conn.close()
-    return f"Successfully ingested {inserted_count} chunks from '{filename}' for company {org_id}."
+    mode = "semantic+lexical" if embeddings else "lexical"
+    return f"Successfully ingested {inserted_count} chunks ({mode}) from '{filename}' for company {org_id}."
 
 def ingest_pdf(file_path, filename, org_id=DEFAULT_COMPANY_ID):
     """Backward-compatible PDF ingestion wrapper."""
@@ -146,31 +213,46 @@ def corpus_stats(org_id=DEFAULT_COMPANY_ID):
     ]
     cursor.execute("SELECT COUNT(*), COALESCE(SUM(token_count), 0) FROM document_chunks WHERE org_id = ?", (org_id,))
     total_chunks, total_tokens = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE org_id = ? AND embedding IS NOT NULL", (org_id,))
+    embedded_chunks = cursor.fetchone()[0]
     conn.close()
+
+    embeddings_active = False
+    try:
+        import ai_gateway
+        embeddings_active = ai_gateway.embeddings_available()
+    except Exception:
+        embeddings_active = False
+
     return {
         "org_id": org_id,
         "sources": sources,
         "total_sources": len(sources),
         "total_chunks": total_chunks,
-        "token_estimate": total_tokens
+        "embedded_chunks": embedded_chunks,
+        "token_estimate": total_tokens,
+        "search_mode": "semantic" if (embeddings_active and embedded_chunks > 0) else "lexical",
+        "embeddings_available": embeddings_active,
     }
 
 def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
-    """
-    Search document chunks scoped by company key.
-    Uses simple keyword/regex matching (as a robust local search engine)
-    with scoring based on query term frequencies.
+    """Hybrid search over company-scoped document chunks.
+
+    When an embedding provider is configured and chunks carry vectors, results
+    are ranked by semantic cosine similarity blended with a lexical term-overlap
+    signal. Otherwise it degrades to the lexical scorer so the corpus remains
+    searchable offline. The returned shape is unchanged for all callers.
     """
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, page_number, content FROM document_chunks WHERE org_id = ?", (org_id,))
+    cursor.execute("SELECT id, filename, page_number, content, embedding FROM document_chunks WHERE org_id = ?", (org_id,))
     all_chunks = cursor.fetchall()
     conn.close()
-    
+
     if not all_chunks:
         return []
-        
+
     # Standardize query words and lightly boost important GRC phrases.
     query_words = [w.lower() for w in re.findall(r'\w+', query) if len(w) > 2]
     phrase_boosts = [
@@ -178,21 +260,61 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
         "pii", "personal data", "encryption", "swift", "vendor", "incident",
         "business continuity", "branch", "payments", "risk appetite"
     ]
+    query_lower = query.lower()
+
+    # Attempt a semantic query embedding. None -> lexical-only path.
+    query_vec = None
+    has_vectors = any(row[4] for row in all_chunks)
+    if has_vectors:
+        try:
+            import ai_gateway
+            query_vec = ai_gateway.embed_query(query)
+        except Exception as e:
+            print(f"Query embedding skipped: {e}")
+            query_vec = None
+
+    def lexical_score(content_lower):
+        score = 0
+        for word in query_words:
+            score += content_lower.count(word)
+        for phrase in phrase_boosts:
+            if phrase in query_lower and phrase in content_lower:
+                score += 4
+        return score
+
+    # --- Semantic (hybrid) path ---
+    if query_vec:
+        scored = []
+        max_lex = 1
+        prelim = []
+        for chunk_id, filename, page_num, content, emb in all_chunks:
+            vec = _unpack_embedding(emb)
+            sim = _cosine(query_vec, vec) if vec else 0.0
+            lex = lexical_score(content.lower())
+            max_lex = max(max_lex, lex)
+            prelim.append((chunk_id, filename, page_num, content, sim, lex))
+        for chunk_id, filename, page_num, content, sim, lex in prelim:
+            # Blend: semantic dominates, lexical overlap is a light tie-breaker.
+            blended = round(0.85 * sim + 0.15 * (lex / max_lex), 6)
+            scored.append({
+                "id": chunk_id,
+                "filename": filename,
+                "page_number": page_num,
+                "content": content,
+                "score": blended,
+                "semantic": round(sim, 4),
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:limit]
+
+    # --- Lexical-only path ---
     if not query_words:
         # fallback to returning the first few chunks
         return [{"id": c[0], "filename": c[1], "page_number": c[2], "content": c[3], "score": 1.0} for c in all_chunks[:limit]]
-        
+
     scored_chunks = []
-    for chunk_id, filename, page_num, content in all_chunks:
-        content_lower = content.lower()
-        score = 0
-        for word in query_words:
-            # Add score based on frequency of query words
-            score += content_lower.count(word)
-        for phrase in phrase_boosts:
-            if phrase in query.lower() and phrase in content_lower:
-                score += 4
-            
+    for chunk_id, filename, page_num, content, _emb in all_chunks:
+        score = lexical_score(content.lower())
         if score > 0:
             scored_chunks.append({
                 "id": chunk_id,
@@ -201,7 +323,7 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
                 "content": content,
                 "score": score
             })
-            
+
     # Sort by score descending
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
     return scored_chunks[:limit]

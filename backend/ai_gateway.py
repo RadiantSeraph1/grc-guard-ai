@@ -154,6 +154,78 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
 
 
 # ---------------------------------------------------------------------------
+# Embeddings (for vector RAG)
+# ---------------------------------------------------------------------------
+# Embeddings are resolved independently of the chat provider: a deployment may
+# run Claude for chat (Anthropic has no embeddings API) while using OpenAI or
+# Gemini for vectors. Preference order is OpenAI -> Gemini, by available key.
+# Returns None when no embedding provider is configured, in which case the RAG
+# layer transparently falls back to lexical search.
+
+EMBEDDING_PROVIDERS = [
+    ("openai", "OPENAI_API_KEY", "text-embedding-3-small", 1536),
+    ("gemini", "GEMINI_API_KEY", "text-embedding-004", 768),
+]
+
+
+def get_embedding_config() -> Optional[dict]:
+    """Resolve the active embedding provider from available environment keys."""
+    for provider, env_name, model, dim in EMBEDDING_PROVIDERS:
+        key = os.environ.get(env_name, "").strip()
+        if key:
+            override = os.environ.get("EMBEDDING_MODEL", "").strip()
+            return {"provider": provider, "api_key": key,
+                    "model": override or model, "dim": dim}
+    return None
+
+
+def embeddings_available() -> bool:
+    return get_embedding_config() is not None
+
+
+def embed_texts(texts: list, config: Optional[dict] = None) -> Optional[list]:
+    """Return a list of embedding vectors (list[float]) for the given texts.
+
+    Returns None if no embedding provider is configured or the call fails, so
+    callers can degrade to lexical search without raising.
+    """
+    if not texts:
+        return []
+    config = config or get_embedding_config()
+    if not config:
+        return None
+    provider = config["provider"]
+    try:
+        if provider == "openai":
+            from openai import OpenAI
+            client = OpenAI(api_key=config["api_key"])
+            resp = client.embeddings.create(model=config["model"], input=texts)
+            # Preserve input order.
+            ordered = sorted(resp.data, key=lambda d: d.index)
+            return [list(d.embedding) for d in ordered]
+        if provider == "gemini":
+            from google import genai
+            client = genai.Client(api_key=config["api_key"])
+            model_id = config["model"]
+            if not model_id.startswith("models/"):
+                model_id = f"models/{model_id}"
+            resp = client.models.embed_content(model=model_id, contents=texts)
+            return [list(e.values) for e in resp.embeddings]
+    except Exception as e:
+        print(f"Embedding generation failed ({provider}): {e}. Falling back to lexical.")
+        return None
+    return None
+
+
+def embed_query(text: str) -> Optional[list]:
+    """Embed a single query string; returns the vector or None."""
+    vectors = embed_texts([text])
+    if vectors:
+        return vectors[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # agno model construction + execution
 # ---------------------------------------------------------------------------
 
