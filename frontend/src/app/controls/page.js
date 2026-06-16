@@ -17,6 +17,7 @@ export default function ControlsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [frameworkFilter, setFrameworkFilter] = useState("ALL");
+  const [frameworkOptions, setFrameworkOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
@@ -40,8 +41,23 @@ export default function ControlsPage() {
     }
   };
 
+  const fetchFrameworkOptions = async () => {
+    try {
+      const token = await getToken();
+      const headers = { "Authorization": `Bearer ${token}` };
+      const res = await fetch(`${API_BASE_URL}/api/frameworks`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setFrameworkOptions(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.warn("Framework filter options unavailable.");
+      setFrameworkOptions([]);
+    }
+  };
+
   useEffect(() => {
     fetchControls();
+    fetchFrameworkOptions();
   }, []);
 
   const intTime = () => Math.floor(Date.now() / 1000);
@@ -182,12 +198,13 @@ export default function ControlsPage() {
               className="bg-transparent text-zinc-355 font-semibold border-none focus:outline-none cursor-pointer"
             >
               <option value="ALL">All Frameworks</option>
-              <option value="basel-iii">Basel III</option>
-              <option value="gdpr">GDPR</option>
-              <option value="cbest">CBEST</option>
-              <option value="soc-2">SOC 2</option>
-              <option value="iso-27001">ISO 27001</option>
-              <option value="pci-dss">PCI DSS</option>
+              {frameworkOptions.length === 0 ? (
+                <option value="" disabled>No frameworks imported</option>
+              ) : (
+                frameworkOptions.map((fw) => (
+                  <option key={fw.id} value={fw.id}>{fw.name}</option>
+                ))
+              )}
             </select>
           </div>
         </div>
