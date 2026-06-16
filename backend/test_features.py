@@ -321,6 +321,70 @@ def test_gap_analysis_and_exports():
     print("SUCCESS: gap analysis + CSV/PDF export verified.")
 
 
+# ---------------------------------------------------------------------------
+# OAuth connect framework
+# ---------------------------------------------------------------------------
+
+def test_oauth_state_sign_verify():
+    import oauth
+    state = oauth.make_state("github", ORG)
+    payload = oauth.verify_state(state, "github")
+    assert payload is not None and payload["o"] == ORG
+    # Wrong provider rejected
+    assert oauth.verify_state(state, "entra") is None
+    # Tampered state rejected
+    assert oauth.verify_state(state + "x", "github") is None
+    print("SUCCESS: OAuth state sign/verify verified.")
+
+
+def test_oauth_authorize_url(monkeypatch=None):
+    import oauth, os
+    # Not configured -> no URL
+    os.environ.pop("GITHUB_CLIENT_ID", None)
+    os.environ.pop("GITHUB_CLIENT_SECRET", None)
+    assert oauth.authorize_url("github", "state123") is None
+    # Configured -> URL contains client_id + redirect_uri + state
+    os.environ["GITHUB_CLIENT_ID"] = "cid_test"
+    os.environ["GITHUB_CLIENT_SECRET"] = "secret_test"
+    url = oauth.authorize_url("github", "state123")
+    assert url and "client_id=cid_test" in url and "state=state123" in url
+    assert "github.com/login/oauth/authorize" in url
+    assert oauth.is_configured("github") is True
+    os.environ.pop("GITHUB_CLIENT_ID", None)
+    os.environ.pop("GITHUB_CLIENT_SECRET", None)
+    print("SUCCESS: OAuth authorize URL verified.")
+
+
+def test_oauth_valid_token_passthrough():
+    import oauth, time as _t
+    creds = {"oauth": True, "access_token": "tok", "expires_at": int(_t.time()) + 3600}
+    token, refreshed = oauth.get_valid_access_token("github", creds)
+    assert token == "tok" and refreshed is None
+    # Non-oauth creds -> nothing
+    assert oauth.get_valid_access_token("github", {"token": "x"}) == (None, None)
+    print("SUCCESS: OAuth token passthrough verified.")
+
+
+def test_oauth_endpoints():
+    res = client.get("/api/integrations/oauth/providers", headers=AUTH)
+    assert res.status_code == 200
+    data = res.json()
+    assert {"github", "google_workspace", "entra"}.issubset(set(data.keys()))
+
+    # start on an unconfigured provider -> 400
+    start = client.get("/api/integrations/github/oauth/start", headers=AUTH)
+    assert start.status_code == 400
+
+    # start on a non-OAuth provider -> 400
+    bad = client.get("/api/integrations/aws/oauth/start", headers=AUTH)
+    assert bad.status_code == 400
+
+    # callback with invalid state -> redirect (302/307) back to frontend, no crash
+    cb = client.get("/api/integrations/github/oauth/callback?code=x&state=bad", follow_redirects=False)
+    assert cb.status_code in (302, 307)
+    print("SUCCESS: OAuth endpoints verified.")
+
+
 if __name__ == "__main__":
     test_framework_import_list_and_remove()
     test_shared_control_reuse_across_frameworks()

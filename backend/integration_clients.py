@@ -608,12 +608,16 @@ class EntraClient:
     Credentials: tenant_id, client_id, client_secret with Graph application
     permissions (User.Read.All, UserAuthenticationMethod.Read.All).
     """
-    def __init__(self, tenant_id=None, client_id=None, client_secret=None):
+    def __init__(self, tenant_id=None, client_id=None, client_secret=None, access_token=None):
         self.tenant_id = tenant_id or os.environ.get("AZURE_TENANT_ID")
         self.client_id = client_id or os.environ.get("AZURE_CLIENT_ID")
         self.client_secret = client_secret or os.environ.get("AZURE_CLIENT_SECRET")
+        # A user-delegated OAuth access token (preferred when present).
+        self.access_token = access_token
 
     def _token(self) -> Optional[str]:
+        if self.access_token:
+            return self.access_token
         if not (self.tenant_id and self.client_id and self.client_secret):
             return None
         try:
@@ -634,8 +638,8 @@ class EntraClient:
         return None
 
     def audit_mfa_enrollment(self) -> dict:
-        if not (self.tenant_id and self.client_id and self.client_secret):
-            return _missing("Entra credentials not configured. Provide tenant_id, client_id, client_secret.")
+        if not self.access_token and not (self.tenant_id and self.client_id and self.client_secret):
+            return _missing("Entra credentials not configured. Connect via OAuth or provide tenant_id, client_id, client_secret.")
         token = self._token()
         if not token:
             return _missing("Failed to obtain Microsoft Graph token. Check the app registration and permissions.")
@@ -685,12 +689,16 @@ class GoogleWorkspaceClient:
     subject (an admin email) to impersonate, plus the customer id (default
     "my_customer").
     """
-    def __init__(self, service_account_json=None, admin_email=None, customer="my_customer"):
+    def __init__(self, service_account_json=None, admin_email=None, customer="my_customer", access_token=None):
         self.service_account_json = service_account_json or os.environ.get("GOOGLE_WORKSPACE_SA_JSON")
         self.admin_email = admin_email or os.environ.get("GOOGLE_WORKSPACE_ADMIN")
         self.customer = customer or os.environ.get("GOOGLE_WORKSPACE_CUSTOMER", "my_customer")
+        # A user-delegated OAuth access token (preferred when present).
+        self.access_token = access_token
 
     def _token(self) -> Optional[str]:
+        if self.access_token:
+            return self.access_token
         if not (self.service_account_json and self.admin_email):
             return None
         try:
@@ -709,8 +717,8 @@ class GoogleWorkspaceClient:
             return None
 
     def audit_2sv_enrollment(self) -> dict:
-        if not (self.service_account_json and self.admin_email):
-            return _missing("Google Workspace not configured. Provide service_account_json and admin_email.")
+        if not self.access_token and not (self.service_account_json and self.admin_email):
+            return _missing("Google Workspace not configured. Connect via OAuth or provide service_account_json and admin_email.")
         token = self._token()
         if not token:
             return _missing("Failed to mint Workspace token. Check domain-wide delegation and the admin subject.")

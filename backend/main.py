@@ -1659,6 +1659,68 @@ def connect_integration(request: IntegrationConnectRequest, db: Session = Depend
     db.commit()
     return {"status": "success", "integration_status": integration.status}
 
+
+# --- OAuth connect flow (GitHub / Google Workspace / Entra) ---
+
+@app.get("/api/integrations/oauth/providers")
+def oauth_providers(current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Report which connectors support OAuth and whether app credentials are set."""
+    import oauth
+    return {pid: {"configured": oauth.is_configured(pid)} for pid in oauth.supported_providers()}
+
+
+@app.get("/api/integrations/{integration_id}/oauth/start")
+def oauth_start(integration_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Return the provider authorization URL to begin the OAuth consent flow."""
+    import oauth
+    if not oauth.get_provider(integration_id):
+        raise HTTPException(status_code=400, detail=f"{integration_id} does not support OAuth.")
+    if not oauth.is_configured(integration_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"OAuth app not configured for {integration_id}. Set its client ID/secret env vars.",
+        )
+    state = oauth.make_state(integration_id, current_user.org_id)
+    url = oauth.authorize_url(integration_id, state)
+    return {"authorize_url": url, "redirect_uri": oauth.redirect_uri(integration_id)}
+
+
+@app.get("/api/integrations/{integration_id}/oauth/callback")
+def oauth_callback(integration_id: str, code: Optional[str] = Query(None), state: Optional[str] = Query(None), error: Optional[str] = Query(None), db: Session = Depends(database.get_db)):
+    """Provider redirect target: verify state, exchange code, store tokens.
+
+    No Clerk dependency (this is a browser redirect from the provider); the org
+    is recovered from the signed state.
+    """
+    import oauth
+    from fastapi.responses import RedirectResponse
+
+    return_base = oauth._frontend_return_url()
+
+    if error:
+        return RedirectResponse(f"{return_base}?oauth_error={error}")
+    payload = oauth.verify_state(state or "", integration_id) if state else None
+    if not payload or not code:
+        return RedirectResponse(f"{return_base}?oauth_error=invalid_state")
+
+    org_id = payload["o"]
+    token = oauth.exchange_code(integration_id, code)
+    if not token or not token.get("access_token"):
+        return RedirectResponse(f"{return_base}?oauth_error=token_exchange_failed")
+
+    integration = db.query(models.Integration).filter_by(id=integration_id, org_id=org_id).first()
+    if not integration:
+        return RedirectResponse(f"{return_base}?oauth_error=integration_not_found")
+
+    token["provider"] = integration_id
+    vault_key = get_required_vault_key()
+    integration.credentials = security.encrypt_log(json.dumps(token), vault_key)
+    integration.status = "Connected"
+    integration.last_sync = int(time.time())
+    integration.last_audit_summary = "Connected via OAuth. Run Sync to pull evidence."
+    db.commit()
+    return RedirectResponse(f"{return_base}?oauth_connected={integration_id}")
+
 def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
     import integration_clients
     db = database.SessionLocal()
@@ -1678,6 +1740,21 @@ def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
         compliant = True
         reason = "Sync completed."
         creds = parse_integration_credentials(creds_str)
+
+        # If this connector was linked via OAuth, resolve a live access token
+        # (refreshing + persisting if it has expired).
+        oauth_token = None
+        if creds.get("oauth"):
+            try:
+                import oauth as oauth_mod
+                oauth_token, refreshed = oauth_mod.get_valid_access_token(integration_id, creds)
+                if refreshed and vault_key:
+                    refreshed["provider"] = integration_id
+                    integration.credentials = security.encrypt_log(json.dumps(refreshed), vault_key)
+                    db.commit()
+                    creds = refreshed
+            except Exception as e:
+                print(f"OAuth token resolution failed for {integration_id}: {e}")
 
         if integration_id == "aws":
             if creds_str:
@@ -1709,20 +1786,24 @@ def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
                 
         elif integration_id == "github":
             if creds_str:
-                creds = parse_integration_credentials(creds_str)
                 parts = creds.get("parts", [])
-                token = creds.get("token") or creds.get("github_token") or (parts[0] if len(parts) > 0 else None)
-                owner = creds.get("owner") or (parts[1] if len(parts) > 1 else None)
-                repo = creds.get("repo") or (parts[2] if len(parts) > 2 else None)
+                # OAuth access token takes precedence over a manually-pasted PAT.
+                token = oauth_token or creds.get("token") or creds.get("github_token") or (parts[0] if len(parts) > 0 else None)
+                owner = creds.get("owner") or (parts[1] if len(parts) > 1 else None) or os.environ.get("GITHUB_OWNER", "")
+                repo = creds.get("repo") or (parts[2] if len(parts) > 2 else None) or os.environ.get("GITHUB_REPO", "")
                 branch = creds.get("branch") or (parts[3] if len(parts) > 3 else "main")
-                
+
                 client = integration_clients.GitHubClient(token)
-                res = client.audit_branch_protection(owner or os.environ.get("GITHUB_OWNER", ""), repo or os.environ.get("GITHUB_REPO", ""), branch)
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "GitHub audit completed.")
+                if not (owner and repo):
+                    compliant = False
+                    reason = "GitHub connected via OAuth. Set the repo to audit (owner/repo) in Settings or GITHUB_OWNER/GITHUB_REPO."
+                else:
+                    res = client.audit_branch_protection(owner, repo, branch)
+                    compliant = res.get("compliant", False)
+                    reason = res.get("reason", "GitHub audit completed.")
             else:
                 compliant = False
-                reason = "GitHub credentials missing. Provide token, owner, repo, and branch."
+                reason = "GitHub credentials missing. Connect via OAuth or provide token, owner, repo."
                 
             control = db.query(models.Control).filter_by(control_code="GIT-BR-01", org_id=org_id).first()
             if control: 
@@ -1800,14 +1881,15 @@ def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
 
         elif integration_id == "entra":
             client = integration_clients.EntraClient(
-                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"))
+                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"),
+                access_token=oauth_token)
             res = client.audit_mfa_enrollment()
             compliant, reason = res.get("compliant", False), res.get("reason", "Entra audit completed.")
 
         elif integration_id == "google_workspace":
             client = integration_clients.GoogleWorkspaceClient(
                 creds.get("service_account_json"), creds.get("admin_email"),
-                creds.get("customer", "my_customer"))
+                creds.get("customer", "my_customer"), access_token=oauth_token)
             res = client.audit_2sv_enrollment()
             compliant, reason = res.get("compliant", False), res.get("reason", "Workspace audit completed.")
 

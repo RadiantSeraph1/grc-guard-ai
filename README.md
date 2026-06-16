@@ -169,6 +169,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 # AUTH0_DOMAIN / AUTH0_CLIENT_ID / AUTH0_CLIENT_SECRET
 # GOOGLE_WORKSPACE_SA_JSON / GOOGLE_WORKSPACE_ADMIN
 # GITHUB_TOKEN (or OAuth: GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)
+#
+# OAuth connect flow (GitHub / Google Workspace / Entra) — register an OAuth app
+# per provider and set its client id/secret, plus the redirect base that routes
+# to THIS backend (must match the app's registered callback):
+# GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
+# GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+# ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET
+# OAUTH_REDIRECT_BASE_URL=http://localhost:8001   # callback: {base}/api/integrations/{provider}/oauth/callback
+# FRONTEND_BASE_URL=http://localhost:3000          # where the callback returns the user
 # SNYK_TOKEN / SNYK_ORG_ID
 # CROWDSTRIKE_CLIENT_ID / CROWDSTRIKE_CLIENT_SECRET / CROWDSTRIKE_BASE_URL
 # JAMF_BASE_URL / JAMF_CLIENT_ID / JAMF_CLIENT_SECRET

@@ -53,6 +53,16 @@ export default function IntegrationsPage() {
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
   const [connectionMode, setConnectionMode] = useState("api");
+  const [oauthProviders, setOauthProviders] = useState({});
+  const [banner, setBanner] = useState(null);
+
+  const fetchOauthProviders = async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE_URL}/api/integrations/oauth/providers`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) setOauthProviders(await res.json());
+    } catch { /* ignore */ }
+  };
 
   const fetchIntegrations = async () => {
     try {
@@ -76,20 +86,25 @@ export default function IntegrationsPage() {
   };
 
   useEffect(() => {
-    // Check URL query parameters for successful OAuth callbacks
+    // Surface OAuth callback results (redirected back from the provider).
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      const status = params.get("status");
-      const id = params.get("id");
-      if (status === "success" && id) {
-        alert(`Successfully authorized ${id.toUpperCase()} via OAuth redirect!`);
-        // Clean URL parameters from the browser address bar
-        const newUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, newUrl);
+      const connected = params.get("oauth_connected");
+      const oauthError = params.get("oauth_error");
+      if (connected) {
+        setBanner({ ok: true, text: `Connected ${connected.replace(/_/g, " ")} via OAuth. Run Sync to pull evidence.` });
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (oauthError) {
+        setBanner({ ok: false, text: `OAuth failed: ${oauthError.replace(/_/g, " ")}.` });
+        window.history.replaceState({}, document.title, window.location.pathname);
       }
     }
     fetchIntegrations();
+    fetchOauthProviders();
   }, []);
+
+  const supportsOauth = (id) => Object.prototype.hasOwnProperty.call(oauthProviders, id);
+  const oauthConfigured = (id) => oauthProviders[id]?.configured;
 
   const intTime = () => Math.floor(Date.now() / 1000);
 
@@ -99,15 +114,16 @@ export default function IntegrationsPage() {
     if (connectionMode === "oauth") {
       try {
         const token = await getToken();
-        const res = await fetch(`${API_BASE_URL}/api/integrations/${activeIntegration.id}/authorize`, {
+        const res = await fetch(`${API_BASE_URL}/api/integrations/${activeIntegration.id}/oauth/start`, {
           headers: { "Authorization": `Bearer ${token}` }
         });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.authorize_url) {
           alert(data.detail || "OAuth is not configured for this connector.");
           return;
         }
-        window.location.href = res.url;
+        // Redirect the browser to the provider consent screen.
+        window.location.href = data.authorize_url;
       } catch (err) {
         alert(`OAuth request failed: ${err.message}`);
       }
@@ -210,6 +226,15 @@ export default function IntegrationsPage() {
           Securely connect GRC Guard AI to your cloud services, repository settings, identity managers, and HR systems.
         </p>
       </div>
+
+      {banner && (
+        <div className={`flex items-center justify-between gap-3 text-xs rounded-lg px-3 py-2 border ${
+          banner.ok ? "bg-emerald-950/30 border-emerald-900/50 text-emerald-300" : "bg-rose-950/30 border-rose-900/50 text-rose-300"
+        }`}>
+          <span>{banner.text}</span>
+          <button onClick={() => setBanner(null)} className="text-current opacity-70 hover:opacity-100"><X size={13} /></button>
+        </div>
+      )}
 
       {/* Categories filter bar */}
       <div className="flex border-b border-zinc-800/80 space-x-6">
@@ -355,17 +380,19 @@ export default function IntegrationsPage() {
               >
                 🔑 API Credentials
               </button>
-              <button
-                type="button"
-                onClick={() => setConnectionMode("oauth")}
-                className={`flex-1 py-2 font-semibold cursor-pointer transition-all ${
-                  connectionMode === "oauth"
-                    ? "bg-zinc-800 text-zinc-200"
-                    : "text-zinc-500 hover:text-zinc-350"
-                }`}
-              >
-                🌐 OAuth Web Connection
-              </button>
+              {supportsOauth(activeIntegration.id) && (
+                <button
+                  type="button"
+                  onClick={() => setConnectionMode("oauth")}
+                  className={`flex-1 py-2 font-semibold cursor-pointer transition-all ${
+                    connectionMode === "oauth"
+                      ? "bg-zinc-800 text-zinc-200"
+                      : "text-zinc-500 hover:text-zinc-350"
+                  }`}
+                >
+                  🌐 Connect with OAuth
+                </button>
+              )}
             </div>
 
             <form onSubmit={handleConnect} className="space-y-4">
@@ -387,14 +414,22 @@ export default function IntegrationsPage() {
                   </div>
                 </div>
               ) : (
-                <div className="space-y-1.5 bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-350 space-y-2">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-350 space-y-2">
                   <div className="flex items-center space-x-2 font-semibold text-zinc-200">
                     <Cloud size={14} className="shrink-0 text-zinc-450" />
-                    <span>OAuth & Web Redirect Connection Mode</span>
+                    <span>Connect {activeIntegration.name} with OAuth</span>
                   </div>
                   <p className="leading-relaxed text-[11px] text-zinc-400">
-                    GitHub can use OAuth when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured on the backend. Other systems use API credentials.
+                    You&apos;ll be redirected to {activeIntegration.name} to grant read-only consent. We store the
+                    returned token (encrypted) and refresh it automatically.
                   </p>
+                  {oauthConfigured(activeIntegration.id) ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">● OAuth app configured</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-amber-400">
+                      ● Not configured — set the provider&apos;s client ID/secret env vars on the backend first.
+                    </span>
+                  )}
                 </div>
               )}
 
