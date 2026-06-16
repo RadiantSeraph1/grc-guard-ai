@@ -1721,6 +1721,57 @@ def oauth_callback(integration_id: str, code: Optional[str] = Query(None), state
     db.commit()
     return RedirectResponse(f"{return_base}?oauth_connected={integration_id}")
 
+
+def _load_integration_creds(integration: models.Integration) -> dict:
+    vault_key = ai_gateway.get_vault_key()
+    if not (integration and integration.credentials and vault_key):
+        return {}
+    return parse_integration_credentials(security.decrypt_log(integration.credentials, vault_key))
+
+
+@app.get("/api/integrations/github/repos")
+def github_repos(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """List repositories the connected GitHub token can access (for selection)."""
+    import integration_clients, oauth as oauth_mod
+    integration = db.query(models.Integration).filter_by(id="github", org_id=current_user.org_id).first()
+    if not integration:
+        raise HTTPException(status_code=404, detail="GitHub integration not found.")
+    creds = _load_integration_creds(integration)
+    token = None
+    if creds.get("oauth"):
+        token, refreshed = oauth_mod.get_valid_access_token("github", creds)
+        if refreshed:
+            refreshed["provider"] = "github"
+            integration.credentials = security.encrypt_log(json.dumps(refreshed), get_required_vault_key())
+            db.commit()
+            creds = refreshed
+    token = token or creds.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="GitHub is not connected. Use Connect with OAuth first.")
+    repos = integration_clients.GitHubClient(token).list_repos()
+    return {"selected": {"owner": creds.get("owner"), "repo": creds.get("repo"), "branch": creds.get("branch", "main")}, "repos": repos}
+
+
+class GithubRepoSelect(BaseModel):
+    owner: str
+    repo: str
+    branch: Optional[str] = "main"
+
+
+@app.post("/api/integrations/github/select-repo")
+def github_select_repo(req: GithubRepoSelect, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Persist which repo the GitHub connector audits (merged into its creds)."""
+    integration = db.query(models.Integration).filter_by(id="github", org_id=current_user.org_id).first()
+    if not integration:
+        raise HTTPException(status_code=404, detail="GitHub integration not found.")
+    creds = _load_integration_creds(integration)
+    creds["owner"] = req.owner
+    creds["repo"] = req.repo
+    creds["branch"] = req.branch or "main"
+    integration.credentials = security.encrypt_log(json.dumps(creds), get_required_vault_key())
+    db.commit()
+    return {"status": "success", "owner": req.owner, "repo": req.repo, "branch": creds["branch"]}
+
 def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
     import integration_clients
     db = database.SessionLocal()

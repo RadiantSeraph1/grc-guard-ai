@@ -55,6 +55,44 @@ export default function IntegrationsPage() {
   const [connectionMode, setConnectionMode] = useState("api");
   const [oauthProviders, setOauthProviders] = useState({});
   const [banner, setBanner] = useState(null);
+  const [repoModal, setRepoModal] = useState(false);
+  const [repos, setRepos] = useState([]);
+  const [reposLoading, setReposLoading] = useState(false);
+  const [selectedRepo, setSelectedRepo] = useState(null);
+
+  const openRepoSelector = async () => {
+    setRepoModal(true);
+    setReposLoading(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE_URL}/api/integrations/github/repos`, { headers: { Authorization: `Bearer ${token}` } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setBanner({ ok: false, text: data.detail || "Could not list GitHub repos." }); setRepoModal(false); return; }
+      setRepos(Array.isArray(data.repos) ? data.repos : []);
+      setSelectedRepo(data.selected?.repo ? data.selected : null);
+    } catch (e) {
+      setBanner({ ok: false, text: `Failed to load repos: ${e.message}` });
+      setRepoModal(false);
+    } finally {
+      setReposLoading(false);
+    }
+  };
+
+  const saveRepo = async (r) => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE_URL}/api/integrations/github/select-repo`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ owner: r.owner, repo: r.repo, branch: r.default_branch || "main" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setRepoModal(false);
+      setBanner({ ok: true, text: `GitHub will audit ${r.owner}/${r.repo}. Run Sync to evaluate branch protection.` });
+    } catch (e) {
+      setBanner({ ok: false, text: `Failed to save repo: ${e.message}` });
+    }
+  };
 
   const fetchOauthProviders = async () => {
     try {
@@ -297,6 +335,14 @@ export default function IntegrationsPage() {
               <div className="flex items-center space-x-2">
                 {item.status === "Connected" || item.status === "Configured" ? (
                   <>
+                    {item.id === "github" && (
+                      <button
+                        onClick={openRepoSelector}
+                        className="text-zinc-300 hover:text-zinc-100 font-semibold border border-zinc-800 bg-zinc-900 py-1.5 px-3 rounded-lg hover:bg-zinc-800 cursor-pointer active:scale-95 transition-all text-xs"
+                      >
+                        Choose Repo
+                      </button>
+                    )}
                     <button
                       onClick={() => handleSync(item.id)}
                       disabled={syncingId === item.id}
@@ -345,6 +391,47 @@ export default function IntegrationsPage() {
                 <span className="break-all text-zinc-300">{log.message}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* GitHub repo selector modal */}
+      {repoModal && (
+        <div className="fixed inset-0 bg-[#09090b]/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#121215] border border-zinc-800/80 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4 relative">
+            <button onClick={() => setRepoModal(false)} className="absolute right-4 top-4 text-zinc-500 hover:text-zinc-200 cursor-pointer"><X size={16} /></button>
+            <div>
+              <h3 className="font-semibold text-zinc-200 text-lg">Choose a repository to audit</h3>
+              <p className="text-zinc-400 text-xs mt-1">Branch-protection is evaluated on the repo&apos;s default branch.</p>
+            </div>
+            <div className="max-h-80 overflow-y-auto custom-scrollbar space-y-1.5 -mx-1 px-1">
+              {reposLoading ? (
+                <div className="py-10 text-center text-zinc-500 text-xs flex items-center justify-center gap-2"><RotateCw size={14} className="animate-spin" /> Loading repositories…</div>
+              ) : repos.length === 0 ? (
+                <div className="py-10 text-center text-zinc-600 text-xs">No repositories accessible with this token.</div>
+              ) : (
+                repos.map((r) => {
+                  const isSel = selectedRepo && selectedRepo.owner === r.owner && selectedRepo.repo === r.repo;
+                  return (
+                    <button
+                      key={`${r.owner}/${r.repo}`}
+                      onClick={() => saveRepo(r)}
+                      className={`w-full flex items-center justify-between gap-2 text-left rounded-lg border px-3 py-2 text-xs transition-colors ${
+                        isSel ? "border-zinc-500 bg-zinc-800/60" : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-600"
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="font-medium text-zinc-200">{r.owner}/{r.repo}</span>
+                        <span className="text-zinc-500 ml-2 text-[10px]">{r.default_branch}</span>
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded border ${r.private ? "border-amber-900/50 text-amber-400" : "border-zinc-800 text-zinc-500"}`}>
+                        {r.private ? "private" : "public"}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
       )}

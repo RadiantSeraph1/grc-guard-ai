@@ -95,6 +95,37 @@ class GitHubClient:
     def __init__(self, token: Optional[str] = None):
         self.token = token or os.environ.get("GITHUB_TOKEN")
 
+    def list_repos(self, limit: int = 100) -> list:
+        """List repositories the token can access (for repo selection)."""
+        if not self.token:
+            return []
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                res = client.get(
+                    "https://api.github.com/user/repos",
+                    headers=headers,
+                    params={"per_page": min(limit, 100), "sort": "updated",
+                            "affiliation": "owner,organization_member"},
+                )
+                if res.status_code != 200:
+                    return []
+                return [
+                    {
+                        "owner": r.get("owner", {}).get("login"),
+                        "repo": r.get("name"),
+                        "default_branch": r.get("default_branch", "main"),
+                        "private": r.get("private", False),
+                    }
+                    for r in res.json()
+                ]
+        except Exception:
+            return []
+
     def audit_branch_protection(self, owner: str, repo: str, branch: str = "main") -> dict:
         """Query GitHub API to verify branch protection rules are active."""
         if not self.token:
