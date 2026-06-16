@@ -333,7 +333,7 @@ export default function IntegrationsPage() {
               </span>
               
               <div className="flex items-center space-x-2">
-                {item.status === "Connected" || item.status === "Configured" ? (
+                {item.status === "Connected" || item.status === "Configured" || item.status === "Error" ? (
                   <>
                     {item.id === "github" && (
                       <button
