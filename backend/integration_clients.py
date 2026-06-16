@@ -158,14 +158,20 @@ class GitHubClient:
                 elif response.status_code == 404:
                     return {
                         "compliant": False,
-                        "reason": f"Branch protection is disabled, or repository branch '{branch}' was not found.",
+                        "reason": f"No branch protection rule on '{branch}' (or the branch does not exist). Add a protection rule in the repo settings.",
+                        "details": {}
+                    }
+                elif response.status_code == 403:
+                    return {
+                        "compliant": False,
+                        "reason": f"Access denied reading branch protection for {owner}/{repo}. GitHub only exposes this to repository admins — choose a repo you administer.",
                         "details": {}
                     }
                 else:
                     return {
                         "compliant": False,
-                        "reason": f"GitHub returned status code: {response.status_code}",
-                        "details": response.json()
+                        "reason": f"GitHub returned status code: {response.status_code} for {owner}/{repo}.",
+                        "details": {}
                     }
         except Exception as e:
             return {
