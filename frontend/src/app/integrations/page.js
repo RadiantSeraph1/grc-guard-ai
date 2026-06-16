@@ -89,6 +89,7 @@ export default function IntegrationsPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setRepoModal(false);
       setBanner({ ok: true, text: `GitHub will audit ${r.owner}/${r.repo}. Run Sync to evaluate branch protection.` });
+      fetchIntegrations();
     } catch (e) {
       setBanner({ ok: false, text: `Failed to save repo: ${e.message}` });
     }
@@ -324,6 +325,22 @@ export default function IntegrationsPage() {
             <div className="text-xs text-zinc-400 leading-relaxed min-h-[40px]">
               {metaFor(item.id).desc}
             </div>
+
+            {(item.auth_method || item.target || item.last_audit_summary) && (
+              <div className="space-y-1.5 text-[10px]">
+                {item.auth_method && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400 font-semibold">{item.auth_method}</span>
+                    {item.target && (
+                      <span className="px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300 font-mono">{item.target}</span>
+                    )}
+                  </div>
+                )}
+                {item.last_audit_summary && (
+                  <p className="text-zinc-600 leading-relaxed line-clamp-2">{item.last_audit_summary}</p>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center justify-between pt-4 border-t border-zinc-800/50 text-xs">
               <span className="text-zinc-500">

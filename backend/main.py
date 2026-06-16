@@ -1629,7 +1629,34 @@ def get_dashboard_trends(current_user: models.User = Depends(auth.RequireRole(["
 # 3. Integrations Management
 @app.get("/api/integrations")
 def get_integrations(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
-    return db.query(models.Integration).filter_by(org_id=current_user.org_id).all()
+    items = db.query(models.Integration).filter_by(org_id=current_user.org_id).all()
+    vault_key = ai_gateway.get_vault_key()
+    out = []
+    for i in items:
+        # Surface a non-sensitive "target"/auth hint without exposing the
+        # encrypted credentials blob to the client.
+        target = None
+        auth_method = None
+        if i.credentials and vault_key:
+            try:
+                creds = parse_integration_credentials(security.decrypt_log(i.credentials, vault_key))
+                auth_method = "OAuth" if creds.get("oauth") else "API key"
+                if i.id == "github" and creds.get("owner") and creds.get("repo"):
+                    branch = creds.get("branch") or "main"
+                    target = f"{creds['owner']}/{creds['repo']}@{branch}"
+            except Exception:
+                pass
+        out.append({
+            "id": i.id,
+            "name": i.name,
+            "category": i.category,
+            "status": i.status,
+            "last_sync": i.last_sync,
+            "last_audit_summary": i.last_audit_summary,
+            "target": target,
+            "auth_method": auth_method,
+        })
+    return out
 
 class IntegrationConnectRequest(BaseModel):
     id: str
