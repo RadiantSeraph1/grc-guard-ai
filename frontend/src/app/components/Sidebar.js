@@ -9,7 +9,7 @@ import {
   LayoutDashboard, ShieldCheck, FileText, AlertTriangle,
   Users, FolderKanban, ShieldAlert, Library, Database,
   Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight,
-  Activity, Radio, Link2, LogOut, Layers
+  Activity, Radio, Link2, LogOut, Layers, ClipboardList
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
@@ -41,6 +41,7 @@ export default function Sidebar() {
     { category: "GOVERNANCE", items: [
       { name: "Controls Monitor", href: "/controls", icon: ShieldCheck },
       { name: "Frameworks Library", href: "/frameworks", icon: Layers },
+      { name: "Remediation Tasks", href: "/tasks", icon: ClipboardList },
       { name: "Policies Manager", href: "/policies", icon: FileText }
     ]},
     { category: "RISK & VENDORS", items: [

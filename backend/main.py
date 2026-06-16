@@ -2676,3 +2676,135 @@ def sync_all_integrations(background_tasks: BackgroundTasks, current_user: model
     background_tasks.add_task(scheduler.run_all_syncs, "manual")
     return {"status": "started", "message": "Re-syncing all connected integrations."}
 
+
+# --- Remediation tasks ---
+
+class RemediationTaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    control_code: Optional[str] = None
+    owner_id: Optional[str] = None
+    priority: Optional[str] = "Medium"
+    due_date: Optional[int] = None
+
+
+class RemediationTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    owner_id: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    due_date: Optional[int] = None
+
+
+def _serialize_task(t: models.RemediationTask, owner_name: Optional[str] = None) -> dict:
+    return {
+        "id": t.id,
+        "title": t.title,
+        "description": t.description,
+        "control_code": t.control_code,
+        "owner_id": t.owner_id,
+        "owner_name": owner_name,
+        "priority": t.priority,
+        "status": t.status,
+        "due_date": t.due_date,
+        "created_at": t.created_at,
+        "updated_at": t.updated_at,
+    }
+
+
+@app.get("/api/tasks")
+def list_remediation_tasks(
+    status: Optional[str] = Query(None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    q = db.query(models.RemediationTask).filter_by(org_id=current_user.org_id)
+    if status:
+        q = q.filter(models.RemediationTask.status == status)
+    tasks = q.order_by(models.RemediationTask.created_at.desc()).all()
+    owner_ids = {t.owner_id for t in tasks if t.owner_id}
+    owners = {
+        u.id: u.name
+        for u in db.query(models.User).filter(models.User.id.in_(owner_ids or [""])).all()
+    }
+    return [_serialize_task(t, owners.get(t.owner_id)) for t in tasks]
+
+
+@app.post("/api/tasks")
+def create_remediation_task(req: RemediationTaskCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    now = int(time.time())
+    control = None
+    if req.control_code:
+        control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=req.control_code).first()
+    task = models.RemediationTask(
+        id=f"task_{uuid.uuid4().hex[:12]}",
+        org_id=current_user.org_id,
+        title=req.title,
+        description=req.description,
+        control_id=control.id if control else None,
+        control_code=req.control_code,
+        owner_id=req.owner_id,
+        priority=req.priority or "Medium",
+        status="Open",
+        due_date=req.due_date,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.post("/api/tasks/from-control/{control_code}")
+def create_task_from_control(control_code: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Create a remediation task pre-filled from a failing/at-risk control."""
+    control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=control_code).first()
+    if not control:
+        raise HTTPException(status_code=404, detail="Control not found.")
+    now = int(time.time())
+    priority = "High" if control.status == "Failing" else "Medium"
+    task = models.RemediationTask(
+        id=f"task_{uuid.uuid4().hex[:12]}",
+        org_id=current_user.org_id,
+        title=f"Remediate: {control.title}",
+        description=f"Control {control.control_code} is {control.status}. {control.description or ''}".strip(),
+        control_id=control.id,
+        control_code=control.control_code,
+        owner_id=control.owner_id,
+        priority=priority,
+        status="Open",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_remediation_task(task_id: str, req: RemediationTaskUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    for field in ("title", "description", "owner_id", "priority", "status", "due_date"):
+        val = getattr(req, field)
+        if val is not None:
+            setattr(task, field, val)
+    task.updated_at = int(time.time())
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_remediation_task(task_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    db.delete(task)
+    db.commit()
+    return {"status": "deleted", "id": task_id}
+
