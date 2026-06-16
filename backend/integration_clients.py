@@ -135,49 +135,69 @@ class GitHubClient:
                 "details": {}
             }
             
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}/protection"
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28"
         }
-        
+        protection_url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}/protection"
+        rules_url = f"https://api.github.com/repos/{owner}/{repo}/rules/branches/{branch}"
+        PROTECTIVE = {"pull_request", "required_status_checks", "required_signatures",
+                      "non_fast_forward", "required_linear_history", "deletion", "update"}
+
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(url, headers=headers)
+            with httpx.Client(timeout=15.0) as client:
+                # 1. Modern rules API — covers Rulesets AND classic rules, and is
+                #    readable without repo-admin (works for org members).
+                rr = client.get(rules_url, headers=headers)
+                if rr.status_code == 200:
+                    rules = rr.json() or []
+                    types = {r.get("type") for r in rules if r.get("type")}
+                    protective = types & PROTECTIVE
+                    if protective:
+                        has_pr = "pull_request" in types
+                        return {
+                            "compliant": True,
+                            "reason": (
+                                f"Branch '{branch}' is protected by {len(rules)} rule(s)"
+                                + (" including required pull-request reviews" if has_pr else "")
+                                + f" ({', '.join(sorted(protective))})."
+                            ),
+                            "details": {"rule_types": sorted(types)},
+                        }
+
+                # 2. Classic branch-protection endpoint (admin-only) for full detail.
+                response = client.get(protection_url, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
-                    required_reviews = data.get("required_pull_request_reviews", {})
-                    min_approvals = required_reviews.get("required_approving_review_count", 0)
-                    
+                    min_approvals = data.get("required_pull_request_reviews", {}).get("required_approving_review_count", 0)
                     return {
                         "compliant": True,
-                        "reason": f"Branch protections active. Pull request reviews required (Min reviews: {min_approvals}).",
-                        "details": data
+                        "reason": f"Classic branch protection active on '{branch}' (min reviews: {min_approvals}).",
+                        "details": data,
                     }
-                elif response.status_code == 404:
+                if response.status_code == 404:
                     return {
                         "compliant": False,
-                        "reason": f"No branch protection rule on '{branch}' (or the branch does not exist). Add a protection rule in the repo settings.",
-                        "details": {}
+                        "reason": f"No branch protection rule or ruleset on '{branch}' (or the branch does not exist). Add a rule under Settings → Rules/Branches.",
+                        "details": {},
                     }
-                elif response.status_code == 403:
+                if response.status_code == 403:
                     return {
                         "compliant": False,
-                        "reason": f"Access denied reading branch protection for {owner}/{repo}. GitHub only exposes this to repository admins — choose a repo you administer.",
-                        "details": {}
+                        "reason": f"Access denied reading classic branch protection for {owner}/{repo}. Use a Ruleset (readable to members) or pick a repo you administer.",
+                        "details": {},
                     }
-                else:
-                    return {
-                        "compliant": False,
-                        "reason": f"GitHub returned status code: {response.status_code} for {owner}/{repo}.",
-                        "details": {}
-                    }
+                return {
+                    "compliant": False,
+                    "reason": f"GitHub returned status code: {response.status_code} for {owner}/{repo}.",
+                    "details": {},
+                }
         except Exception as e:
             return {
                 "compliant": False,
                 "reason": f"GitHub API request failed: {str(e)}",
-                "details": {}
+                "details": {},
             }
 
 class OktaClient:
