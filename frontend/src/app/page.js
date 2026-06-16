@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useUser, useAuth } from "@clerk/nextjs";
-import { 
-  ShieldCheck, AlertTriangle, RotateCw, CheckCircle2, 
-  AlertOctagon, HelpCircle, ArrowUpRight, ArrowRight, Activity, Globe
+import {
+  ShieldCheck, AlertTriangle, RotateCw, CheckCircle2,
+  AlertOctagon, HelpCircle, ArrowUpRight, ArrowRight, Activity, Globe,
+  TrendingUp, TrendingDown, Minus
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
@@ -39,6 +40,7 @@ export default function DashboardPage() {
   const [integrations, setIntegrations] = useState([]);
   const [activities, setActivities] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [drift, setDrift] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
@@ -61,6 +63,9 @@ export default function DashboardPage() {
 
       const deptData = await fetchJsonOrThrow(`${API_BASE_URL}/api/departments`, { headers });
       setDepartments(Array.isArray(deptData) ? deptData : []);
+
+      const driftData = await fetchJsonOrThrow(`${API_BASE_URL}/api/drift?only_drift=true&limit=10`, { headers });
+      setDrift(Array.isArray(driftData) ? driftData : []);
     } catch (err) {
       console.warn("Dashboard API unavailable; showing an empty dashboard.", err);
       setStats(DEFAULT_STATS);
@@ -68,6 +73,7 @@ export default function DashboardPage() {
       setIntegrations([]);
       setActivities([]);
       setDepartments([]);
+      setDrift([]);
     } finally {
       setLoading(false);
     }
@@ -97,6 +103,28 @@ export default function DashboardPage() {
     setTimeout(() => setSyncing(false), 1000);
   };
 
+  const acknowledgeDrift = async (id) => {
+    try {
+      const token = await getToken();
+      await fetch(`${API_BASE_URL}/api/drift/${id}/acknowledge`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      setDrift((prev) => prev.filter((d) => d.id !== id));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fmtAgo = (ts) => {
+    if (!ts) return "";
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  };
+
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto w-full">
       {/* Header */}
@@ -123,92 +151,87 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPI Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        
-        {/* Compliance Meter */}
-        <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 flex items-center justify-between shadow-sm">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wide">Compliance Score</span>
-            <div className="flex items-baseline">
-              <span className="text-2xl font-semibold text-zinc-150">{stats.compliance_score}%</span>
-            </div>
-            <span className="text-[9px] text-emerald-500 font-medium tracking-wide">
-              +4.2% since last month
+      {/* Compliance Drift alert (continuous monitoring) */}
+      {drift.length > 0 && (
+        <div className="bg-amber-950/20 border border-amber-900/50 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={15} className="text-amber-400" />
+            <h3 className="font-semibold text-amber-200 text-sm">Compliance Drift Detected</h3>
+            <span className="text-[10px] text-amber-300/70 bg-amber-900/30 px-2 py-0.5 rounded-full border border-amber-900/50">
+              {drift.length} control{drift.length === 1 ? "" : "s"} regressed
             </span>
           </div>
-          <div className="relative w-14 h-14 flex items-center justify-center">
-            <svg className="w-full h-full transform -rotate-90">
-              <circle cx="28" cy="28" r="24" className="stroke-zinc-800 fill-none" strokeWidth="4" />
-              <circle 
-                cx="28" 
-                cy="28" 
-                r="24" 
-                className="stroke-zinc-100 fill-none transition-all duration-700" 
-                strokeWidth="4"
-                strokeDasharray={150}
-                strokeDashoffset={150 - (150 * stats.compliance_score) / 100}
-              />
-            </svg>
-            <span className="absolute text-[8px] font-bold text-zinc-500">SCORE</span>
+          <div className="space-y-2">
+            {drift.map((d) => (
+              <div key={d.id} className="flex items-center justify-between gap-3 text-xs bg-[#121215]/60 border border-zinc-800/60 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <span className="font-medium text-zinc-200">{d.control_title}</span>
+                  <span className="text-zinc-500 ml-2 font-mono text-[10px]">{d.control_code}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-[11px]">
+                    <span className="text-emerald-400">{d.old_status}</span>
+                    <span className="text-zinc-600 mx-1">→</span>
+                    <span className="text-rose-400">{d.new_status}</span>
+                  </span>
+                  <span className="text-zinc-600 text-[10px] hidden sm:inline">{fmtAgo(d.detected_at)}</span>
+                  <button
+                    onClick={() => acknowledgeDrift(d.id)}
+                    className="text-[10px] text-zinc-400 hover:text-zinc-100 border border-zinc-800 hover:border-zinc-600 rounded px-2 py-0.5 transition-colors"
+                  >
+                    Acknowledge
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
+      )}
 
-        {/* Residual Risk */}
-        <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 flex items-center justify-between shadow-sm">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wide">Average Risk</span>
-            <div className="flex items-baseline space-x-1">
-              <span className="text-2xl font-semibold text-zinc-150">{stats.average_residual_risk}</span>
-              <span className="text-[10px] text-zinc-650">/ 25</span>
-            </div>
-            <span className={`text-[8px] font-bold uppercase py-0.5 px-1.5 rounded ${
-              stats.average_residual_risk >= 15 
-                ? "bg-rose-500/10 text-rose-400" 
-                : stats.average_residual_risk >= 8 
-                ? "bg-amber-500/10 text-amber-500" 
-                : "bg-emerald-500/10 text-emerald-450"
-            }`}>
-              {stats.average_residual_risk >= 15 ? "High Risk" : stats.average_residual_risk >= 8 ? "Moderate" : "Secure"}
-            </span>
-          </div>
-          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-center text-zinc-500">
-            <AlertTriangle size={18} />
-          </div>
-        </div>
+      {/* Hero: control-posture donut + stat cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Control posture donut */}
+        <Card title="Control Posture" subtitle="Live status across all controls">
+          <PostureDonut
+            passing={stats.passing_controls_count}
+            warning={stats.warning_controls_count}
+            failing={stats.failed_controls_count}
+            score={stats.compliance_score}
+          />
+        </Card>
 
-        {/* Failing Controls */}
-        <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 flex items-center justify-between shadow-sm">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wide">Failing Controls</span>
-            <div className="flex items-baseline space-x-1.5">
-              <span className="text-2xl font-semibold text-rose-400">{stats.failed_controls_count}</span>
-              <span className="text-[10px] text-zinc-650">of {stats.total_controls_count} checks</span>
-            </div>
-            <span className="text-[9px] text-rose-455 font-medium tracking-wide">
-              Requires review
-            </span>
-          </div>
-          <div className="w-10 h-10 bg-rose-500/5 border border-rose-500/10 rounded-lg flex items-center justify-center text-rose-400">
-            <AlertOctagon size={18} />
-          </div>
-        </div>
-
-        {/* Next Audit countdown */}
-        <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 flex items-center justify-between shadow-sm">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wide">Audit Readiness</span>
-            <div className="flex items-baseline space-x-1">
-              <span className="text-2xl font-semibold text-zinc-150">{stats.days_until_next_audit}</span>
-              <span className="text-[10px] text-zinc-500">Days Out</span>
-            </div>
-            <span className="text-[9px] text-zinc-500 tracking-wide">
-              Target Assessment
-            </span>
-          </div>
-          <div className="w-10 h-10 bg-zinc-900 border border-zinc-800 rounded-lg flex items-center justify-center text-zinc-500">
-            <ShieldCheck size={18} />
-          </div>
+        {/* Stat cards cluster */}
+        <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <StatCard
+            label="Compliance Score"
+            value={`${stats.compliance_score}%`}
+            chipTone={stats.compliance_score >= 80 ? "good" : stats.compliance_score >= 50 ? "warn" : "bad"}
+            chipText={`${stats.passing_controls_count}/${stats.total_controls_count} passing`}
+            footnote="of all controls"
+          />
+          <StatCard
+            label="Average Residual Risk"
+            value={stats.average_residual_risk}
+            valueSuffix="/ 25"
+            chipTone={stats.average_residual_risk >= 15 ? "bad" : stats.average_residual_risk >= 8 ? "warn" : "good"}
+            chipText={stats.average_residual_risk >= 15 ? "High" : stats.average_residual_risk >= 8 ? "Moderate" : "Low"}
+            footnote="across open risks"
+          />
+          <StatCard
+            label="Failing Controls"
+            value={stats.failed_controls_count}
+            chipTone={stats.failed_controls_count > 0 ? "bad" : "good"}
+            chipText={stats.failed_controls_count > 0 ? "Needs review" : "All clear"}
+            footnote={`of ${stats.total_controls_count} checks`}
+          />
+          <StatCard
+            label="Active Integrations"
+            value={`${stats.active_integrations}/${stats.total_integrations}`}
+            chipTone={stats.active_integrations > 0 ? "good" : "neutral"}
+            chipText={drift.length > 0 ? `${drift.length} drift` : "stable"}
+            chipToneOverride={drift.length > 0 ? "bad" : undefined}
+            footnote="connected sources"
+          />
         </div>
       </div>
 
@@ -441,6 +464,115 @@ export default function DashboardPage() {
             </a>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard-3 style building blocks (cards, stat cards, delta chips, donut)
+// ---------------------------------------------------------------------------
+
+function Card({ title, subtitle, children, className = "" }) {
+  return (
+    <div className={`bg-[#121215] border border-zinc-800/80 rounded-xl p-5 shadow-sm ${className}`}>
+      {(title || subtitle) && (
+        <div className="mb-4">
+          {title && <h3 className="font-medium text-zinc-150 text-sm">{title}</h3>}
+          {subtitle && <p className="text-[11px] text-zinc-500 mt-0.5">{subtitle}</p>}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+const CHIP_TONES = {
+  good: "bg-emerald-500/10 text-emerald-400",
+  bad: "bg-rose-500/10 text-rose-400",
+  warn: "bg-amber-500/10 text-amber-500",
+  neutral: "bg-zinc-800 text-zinc-400",
+};
+
+function DeltaChip({ tone = "neutral", children }) {
+  const Icon = tone === "good" ? TrendingUp : tone === "bad" ? TrendingDown : Minus;
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${CHIP_TONES[tone] || CHIP_TONES.neutral}`}>
+      <Icon size={11} className="shrink-0" />
+      {children}
+    </span>
+  );
+}
+
+function StatCard({ label, value, valueSuffix, chipTone, chipToneOverride, chipText, footnote }) {
+  return (
+    <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 shadow-sm flex flex-col gap-3">
+      <span className="text-xs font-normal text-zinc-500">{label}</span>
+      <p className="font-semibold text-2xl text-zinc-100 tabular-nums flex items-baseline gap-1.5">
+        {value}
+        {valueSuffix && <span className="text-[11px] font-normal text-zinc-600">{valueSuffix}</span>}
+      </p>
+      <div className="flex items-center gap-2 text-xs">
+        {chipText && <DeltaChip tone={chipToneOverride || chipTone}>{chipText}</DeltaChip>}
+        {footnote && <span className="text-zinc-500 text-[11px]">{footnote}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Inline SVG donut for control status, with a centered score and a legend.
+function PostureDonut({ passing = 0, warning = 0, failing = 0, score = 0 }) {
+  const total = passing + warning + failing;
+  const segments = [
+    { label: "Passing", value: passing, color: "#34d399" },
+    { label: "Warning", value: warning, color: "#fbbf24" },
+    { label: "Failing", value: failing, color: "#fb7185" },
+  ];
+  const r = 52;
+  const c = 2 * Math.PI * r;
+  let offset = 0;
+
+  return (
+    <div className="flex items-center gap-5">
+      <div className="relative shrink-0" style={{ width: 132, height: 132 }}>
+        <svg width="132" height="132" className="-rotate-90">
+          <circle cx="66" cy="66" r={r} fill="none" stroke="#27272a" strokeWidth="12" />
+          {total > 0 && segments.map((s) => {
+            if (s.value <= 0) return null;
+            const len = (s.value / total) * c;
+            const dash = `${len} ${c - len}`;
+            const circle = (
+              <circle
+                key={s.label}
+                cx="66" cy="66" r={r} fill="none"
+                stroke={s.color} strokeWidth="12"
+                strokeDasharray={dash}
+                strokeDashoffset={-offset}
+                strokeLinecap="butt"
+              />
+            );
+            offset += len;
+            return circle;
+          })}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-semibold text-zinc-100 tabular-nums">{total > 0 ? `${score}%` : "—"}</span>
+          <span className="text-[9px] uppercase tracking-widest text-zinc-500">Ready</span>
+        </div>
+      </div>
+      <div className="space-y-2 text-xs flex-1 min-w-0">
+        {segments.map((s) => (
+          <div key={s.label} className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 text-zinc-400">
+              <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+              {s.label}
+            </span>
+            <span className="font-semibold text-zinc-200 tabular-nums">{s.value}</span>
+          </div>
+        ))}
+        {total === 0 && (
+          <p className="text-[11px] text-zinc-600 pt-1">No controls yet. Import a framework to populate posture.</p>
+        )}
       </div>
     </div>
   );

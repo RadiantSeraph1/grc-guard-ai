@@ -3,9 +3,9 @@
 import { useState, useEffect, Fragment } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { 
-  ShieldCheck, AlertTriangle, AlertOctagon, Search, Filter, 
+  ShieldCheck, AlertTriangle, AlertOctagon, Search, Filter,
   RotateCw, ExternalLink, User, Clock, ArrowRight, ShieldAlert,
-  ChevronDown, ChevronUp
+  ChevronDown, ChevronUp, ClipboardList
 } from "lucide-react";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
@@ -21,6 +21,8 @@ export default function ControlsPage() {
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
+  const [taskControl, setTaskControl] = useState(null);
+  const [taskDone, setTaskDone] = useState(null);
 
   const fetchControls = async () => {
     try {
@@ -104,6 +106,24 @@ export default function ControlsPage() {
       setControls(prev => prev.map(c => c.id === id ? { ...c, status: "Passing", last_tested: intTime() } : c));
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const handleCreateTask = async (controlCode) => {
+    setTaskControl(controlCode);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_BASE_URL}/api/tasks/from-control/${encodeURIComponent(controlCode)}`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setTaskDone(controlCode);
+      setTimeout(() => setTaskDone(null), 3000);
+    } catch (err) {
+      console.error("Failed to create remediation task", err);
+    } finally {
+      setTaskControl(null);
     }
   };
 
@@ -309,7 +329,7 @@ export default function ControlsPage() {
                               </span>
                             </div>
 
-                            <div className="pt-2">
+                            <div className="pt-2 space-y-2">
                               <button
                                 onClick={() => handleTestControl(c.id)}
                                 disabled={testingId === c.id}
@@ -318,6 +338,16 @@ export default function ControlsPage() {
                                 <RotateCw size={14} className={testingId === c.id ? "animate-spin text-zinc-900" : "text-zinc-500"} />
                                 <span>{testingId === c.id ? "Testing..." : "Trigger Audit Recheck"}</span>
                               </button>
+                              {c.status !== "Passing" && (
+                                <button
+                                  onClick={() => handleCreateTask(c.control_code)}
+                                  disabled={taskControl === c.control_code}
+                                  className="w-full bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-zinc-200 font-medium py-2 px-3 rounded-lg cursor-pointer text-xs flex items-center justify-center space-x-2 transition-all disabled:opacity-50"
+                                >
+                                  <ClipboardList size={14} className="text-zinc-500" />
+                                  <span>{taskControl === c.control_code ? "Creating…" : taskDone === c.control_code ? "Task created ✓" : "Create remediation task"}</span>
+                                </button>
+                              )}
                             </div>
                           </div>
 

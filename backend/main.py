@@ -403,6 +403,12 @@ class SuperAdminDepartmentMoveRequest(BaseModel):
 def on_startup():
     # Seed the main database
     seed_db()
+    # Start continuous-monitoring scheduler (no-op if APScheduler missing/disabled)
+    try:
+        import scheduler
+        scheduler.start()
+    except Exception as e:
+        print(f"Scheduler startup skipped: {e}")
 
 # Existing base endpoints
 
@@ -1653,7 +1659,7 @@ def connect_integration(request: IntegrationConnectRequest, db: Session = Depend
     db.commit()
     return {"status": "success", "integration_status": integration.status}
 
-def run_sync_task(integration_id: str, org_id: str):
+def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
     import integration_clients
     db = database.SessionLocal()
     try:
@@ -1841,7 +1847,7 @@ def run_sync_task(integration_id: str, org_id: str):
         # (covers all connectors uniformly, including ones with no bespoke block
         # above) and refresh affected framework readiness.
         try:
-            framework_library.apply_connector_result(db, org_id, integration_id, compliant)
+            framework_library.apply_connector_result(db, org_id, integration_id, compliant, source=source)
         except Exception as e:
             print(f"Connector->control mapping skipped for {integration_id}: {e}")
     finally:
@@ -2610,4 +2616,301 @@ def import_framework(request: FrameworkImportRequest, db: Session = Depends(data
 def delete_framework(framework_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
     """Remove a framework; strips its tag from controls and deletes orphans."""
     return framework_library.remove_framework(db, current_user.org_id, framework_id)
+
+
+# --- Continuous monitoring / drift detection ---
+
+@app.get("/api/drift")
+def get_drift_events(
+    only_drift: bool = Query(True),
+    limit: int = Query(50),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """Recent control status changes. Defaults to drift (regressions) only."""
+    q = db.query(models.ControlStatusEvent).filter_by(org_id=current_user.org_id)
+    if only_drift:
+        q = q.filter(models.ControlStatusEvent.is_drift == True)  # noqa: E712
+    events = q.order_by(models.ControlStatusEvent.detected_at.desc()).limit(max(1, min(limit, 200))).all()
+
+    # Resolve control titles in one pass.
+    codes = {e.control_code for e in events}
+    titles = {
+        c.control_code: c.title
+        for c in db.query(models.Control).filter(
+            models.Control.org_id == current_user.org_id,
+            models.Control.control_code.in_(codes or [""]),
+        ).all()
+    }
+    return [
+        {
+            "id": e.id,
+            "control_code": e.control_code,
+            "control_title": titles.get(e.control_code, e.control_code),
+            "old_status": e.old_status,
+            "new_status": e.new_status,
+            "source": e.source,
+            "is_drift": e.is_drift,
+            "acknowledged": e.acknowledged,
+            "detected_at": e.detected_at,
+        }
+        for e in events
+    ]
+
+
+@app.post("/api/drift/{event_id}/acknowledge")
+def acknowledge_drift(event_id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    event = db.query(models.ControlStatusEvent).filter_by(id=event_id, org_id=current_user.org_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Drift event not found.")
+    event.acknowledged = True
+    db.commit()
+    return {"status": "acknowledged", "id": event_id}
+
+
+@app.post("/api/integrations/sync-all")
+def sync_all_integrations(background_tasks: BackgroundTasks, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Manually trigger a sync of every Connected integration (same path the
+    scheduler uses for continuous monitoring)."""
+    import scheduler
+    background_tasks.add_task(scheduler.run_all_syncs, "manual")
+    return {"status": "started", "message": "Re-syncing all connected integrations."}
+
+
+# --- Remediation tasks ---
+
+class RemediationTaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    control_code: Optional[str] = None
+    owner_id: Optional[str] = None
+    priority: Optional[str] = "Medium"
+    due_date: Optional[int] = None
+
+
+class RemediationTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    owner_id: Optional[str] = None
+    priority: Optional[str] = None
+    status: Optional[str] = None
+    due_date: Optional[int] = None
+
+
+def _serialize_task(t: models.RemediationTask, owner_name: Optional[str] = None) -> dict:
+    return {
+        "id": t.id,
+        "title": t.title,
+        "description": t.description,
+        "control_code": t.control_code,
+        "owner_id": t.owner_id,
+        "owner_name": owner_name,
+        "priority": t.priority,
+        "status": t.status,
+        "due_date": t.due_date,
+        "created_at": t.created_at,
+        "updated_at": t.updated_at,
+    }
+
+
+@app.get("/api/tasks")
+def list_remediation_tasks(
+    status: Optional[str] = Query(None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    q = db.query(models.RemediationTask).filter_by(org_id=current_user.org_id)
+    if status:
+        q = q.filter(models.RemediationTask.status == status)
+    tasks = q.order_by(models.RemediationTask.created_at.desc()).all()
+    owner_ids = {t.owner_id for t in tasks if t.owner_id}
+    owners = {
+        u.id: u.name
+        for u in db.query(models.User).filter(models.User.id.in_(owner_ids or [""])).all()
+    }
+    return [_serialize_task(t, owners.get(t.owner_id)) for t in tasks]
+
+
+@app.post("/api/tasks")
+def create_remediation_task(req: RemediationTaskCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    now = int(time.time())
+    control = None
+    if req.control_code:
+        control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=req.control_code).first()
+    task = models.RemediationTask(
+        id=f"task_{uuid.uuid4().hex[:12]}",
+        org_id=current_user.org_id,
+        title=req.title,
+        description=req.description,
+        control_id=control.id if control else None,
+        control_code=req.control_code,
+        owner_id=req.owner_id,
+        priority=req.priority or "Medium",
+        status="Open",
+        due_date=req.due_date,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.post("/api/tasks/from-control/{control_code}")
+def create_task_from_control(control_code: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Create a remediation task pre-filled from a failing/at-risk control."""
+    control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=control_code).first()
+    if not control:
+        raise HTTPException(status_code=404, detail="Control not found.")
+    now = int(time.time())
+    priority = "High" if control.status == "Failing" else "Medium"
+    task = models.RemediationTask(
+        id=f"task_{uuid.uuid4().hex[:12]}",
+        org_id=current_user.org_id,
+        title=f"Remediate: {control.title}",
+        description=f"Control {control.control_code} is {control.status}. {control.description or ''}".strip(),
+        control_id=control.id,
+        control_code=control.control_code,
+        owner_id=control.owner_id,
+        priority=priority,
+        status="Open",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_remediation_task(task_id: str, req: RemediationTaskUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    for field in ("title", "description", "owner_id", "priority", "status", "due_date"):
+        val = getattr(req, field)
+        if val is not None:
+            setattr(task, field, val)
+    task.updated_at = int(time.time())
+    db.commit()
+    db.refresh(task)
+    return _serialize_task(task)
+
+
+@app.delete("/api/tasks/{task_id}")
+def delete_remediation_task(task_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    db.delete(task)
+    db.commit()
+    return {"status": "deleted", "id": task_id}
+
+
+# --- Notifications ---
+
+@app.get("/api/notifications")
+def list_notifications(
+    unread_only: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """List notifications. Generates overdue-task alerts on read (idempotent)."""
+    import notifications as notif
+    try:
+        notif.generate_overdue_task_notifications(db, current_user.org_id)
+    except Exception as e:
+        print(f"Overdue notification generation skipped: {e}")
+
+    q = db.query(models.Notification).filter_by(org_id=current_user.org_id)
+    if unread_only:
+        q = q.filter(models.Notification.read == False)  # noqa: E712
+    items = q.order_by(models.Notification.created_at.desc()).limit(100).all()
+    unread = db.query(models.Notification).filter_by(org_id=current_user.org_id, read=False).count()
+    return {
+        "unread_count": unread,
+        "notifications": [
+            {
+                "id": n.id,
+                "type": n.type,
+                "severity": n.severity,
+                "title": n.title,
+                "message": n.message,
+                "link": n.link,
+                "read": n.read,
+                "created_at": n.created_at,
+            }
+            for n in items
+        ],
+    }
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    n = db.query(models.Notification).filter_by(id=notification_id, org_id=current_user.org_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    n.read = True
+    db.commit()
+    return {"status": "read", "id": notification_id}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    db.query(models.Notification).filter_by(org_id=current_user.org_id, read=False).update({"read": True})
+    db.commit()
+    return {"status": "all_read"}
+
+
+# --- Reports / export ---
+
+@app.get("/api/reports/gap-analysis")
+def get_gap_analysis(
+    framework_id: Optional[str] = Query(None),
+    include_ai: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """JSON gap analysis across imported frameworks (optionally one framework)."""
+    import reports
+    report = reports.build_gap_analysis(db, current_user.org_id, framework_id)
+    if include_ai:
+        report["executive_summary"] = reports.ai_executive_summary(report, current_user.org_id)
+    return report
+
+
+@app.get("/api/reports/export")
+def export_report(
+    format: str = Query("csv"),
+    framework_id: Optional[str] = Query(None),
+    include_ai: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """Download the gap analysis as CSV or PDF."""
+    import reports
+    from fastapi.responses import Response, PlainTextResponse
+    report = reports.build_gap_analysis(db, current_user.org_id, framework_id)
+    fmt = (format or "csv").lower()
+
+    if fmt == "csv":
+        body = reports.render_csv(report)
+        fname = reports.report_filename(report, framework_id, "csv")
+        return PlainTextResponse(
+            body,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    if fmt == "pdf":
+        summary = reports.ai_executive_summary(report, current_user.org_id) if include_ai else ""
+        body = reports.render_pdf(report, summary)
+        fname = reports.report_filename(report, framework_id, "pdf")
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    raise HTTPException(status_code=400, detail="format must be 'csv' or 'pdf'.")
 
