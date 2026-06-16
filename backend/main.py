@@ -1479,16 +1479,20 @@ def get_ai_providers(db: Session = Depends(database.get_db), current_user: model
     result = []
     for c in configs:
         masked_key = ""
-        if c.api_key:
-            decrypted = ai_gateway.get_decrypted_key(c)
-            if decrypted:
-                masked_key = decrypted[:3] + "•" * (len(decrypted) - 3) if len(decrypted) > 3 else "••••••••"
+        decrypted = ai_gateway.get_decrypted_key(c)  # honors DB key OR .env key
+        if decrypted:
+            masked_key = decrypted[:3] + "•" * (len(decrypted) - 3) if len(decrypted) > 3 else "••••••••"
+        env_key = ai_gateway.get_env_provider_key(c.id)
         result.append({
             "id": c.id,
             "base_url": c.base_url,
             "model_override": c.model_override,
             "is_active": c.is_active,
-            "api_key": masked_key
+            "api_key": masked_key,
+            # Usable if a key exists in the DB or the environment, or the
+            # provider needs no key (local engines).
+            "has_key": bool(decrypted) or c.id in ["local_evidence", "ollama", "local"],
+            "key_source": "env" if (env_key and not c.api_key) else ("db" if c.api_key else None),
         })
     return result
 
@@ -1522,10 +1526,13 @@ def activate_ai_provider(id: str, db: Session = Depends(database.get_db), curren
         db.refresh(target)
         
     if id not in ["local_evidence", "ollama", "local"]:
-        if not target.api_key or target.api_key.strip() == "":
+        # Accept a key from the DB OR the environment (.env). Previously only the
+        # DB key was checked, so env-configured providers (e.g. GROQ_API_KEY)
+        # could not be activated from the UI.
+        if not ai_gateway.get_decrypted_key(target):
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Please configure it first."
+                detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Add it in .env or here first."
             )
             
     providers = db.query(models.AIProviderConfig).filter_by(org_id=current_user.org_id).all()
