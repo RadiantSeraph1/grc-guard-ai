@@ -403,6 +403,12 @@ class SuperAdminDepartmentMoveRequest(BaseModel):
 def on_startup():
     # Seed the main database
     seed_db()
+    # Start continuous-monitoring scheduler (no-op if APScheduler missing/disabled)
+    try:
+        import scheduler
+        scheduler.start()
+    except Exception as e:
+        print(f"Scheduler startup skipped: {e}")
 
 # Existing base endpoints
 
@@ -1653,7 +1659,7 @@ def connect_integration(request: IntegrationConnectRequest, db: Session = Depend
     db.commit()
     return {"status": "success", "integration_status": integration.status}
 
-def run_sync_task(integration_id: str, org_id: str):
+def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
     import integration_clients
     db = database.SessionLocal()
     try:
@@ -1841,7 +1847,7 @@ def run_sync_task(integration_id: str, org_id: str):
         # (covers all connectors uniformly, including ones with no bespoke block
         # above) and refresh affected framework readiness.
         try:
-            framework_library.apply_connector_result(db, org_id, integration_id, compliant)
+            framework_library.apply_connector_result(db, org_id, integration_id, compliant, source=source)
         except Exception as e:
             print(f"Connector->control mapping skipped for {integration_id}: {e}")
     finally:
@@ -2610,4 +2616,63 @@ def import_framework(request: FrameworkImportRequest, db: Session = Depends(data
 def delete_framework(framework_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
     """Remove a framework; strips its tag from controls and deletes orphans."""
     return framework_library.remove_framework(db, current_user.org_id, framework_id)
+
+
+# --- Continuous monitoring / drift detection ---
+
+@app.get("/api/drift")
+def get_drift_events(
+    only_drift: bool = Query(True),
+    limit: int = Query(50),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """Recent control status changes. Defaults to drift (regressions) only."""
+    q = db.query(models.ControlStatusEvent).filter_by(org_id=current_user.org_id)
+    if only_drift:
+        q = q.filter(models.ControlStatusEvent.is_drift == True)  # noqa: E712
+    events = q.order_by(models.ControlStatusEvent.detected_at.desc()).limit(max(1, min(limit, 200))).all()
+
+    # Resolve control titles in one pass.
+    codes = {e.control_code for e in events}
+    titles = {
+        c.control_code: c.title
+        for c in db.query(models.Control).filter(
+            models.Control.org_id == current_user.org_id,
+            models.Control.control_code.in_(codes or [""]),
+        ).all()
+    }
+    return [
+        {
+            "id": e.id,
+            "control_code": e.control_code,
+            "control_title": titles.get(e.control_code, e.control_code),
+            "old_status": e.old_status,
+            "new_status": e.new_status,
+            "source": e.source,
+            "is_drift": e.is_drift,
+            "acknowledged": e.acknowledged,
+            "detected_at": e.detected_at,
+        }
+        for e in events
+    ]
+
+
+@app.post("/api/drift/{event_id}/acknowledge")
+def acknowledge_drift(event_id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    event = db.query(models.ControlStatusEvent).filter_by(id=event_id, org_id=current_user.org_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Drift event not found.")
+    event.acknowledged = True
+    db.commit()
+    return {"status": "acknowledged", "id": event_id}
+
+
+@app.post("/api/integrations/sync-all")
+def sync_all_integrations(background_tasks: BackgroundTasks, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+    """Manually trigger a sync of every Connected integration (same path the
+    scheduler uses for continuous monitoring)."""
+    import scheduler
+    background_tasks.add_task(scheduler.run_all_syncs, "manual")
+    return {"status": "started", "message": "Re-syncing all connected integrations."}
 

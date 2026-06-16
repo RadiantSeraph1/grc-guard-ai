@@ -24,6 +24,8 @@ class Organization(Base):
     policy_acknowledgments = relationship("PolicyAcknowledgment", back_populates="organization", cascade="all, delete-orphan")
     comments = relationship("AuditComment", back_populates="organization", cascade="all, delete-orphan")
     vector_chunks = relationship("VectorChunk", back_populates="organization", cascade="all, delete-orphan")
+    control_status_events = relationship("ControlStatusEvent", back_populates="organization", cascade="all, delete-orphan")
+    remediation_tasks = relationship("RemediationTask", back_populates="organization", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -239,3 +241,46 @@ class VectorChunk(Base):
     embedding = Column(LargeBinary, nullable=True) # Stores the text-embedding-004 binary array of float32s
 
     organization = relationship("Organization", back_populates="vector_chunks")
+
+
+class ControlStatusEvent(Base):
+    """Append-only history of control status changes.
+
+    Powers drift detection (a Passing control regressing to Failing/Warning)
+    and historical readiness trends. Written whenever a control's status
+    changes, primarily from connector syncs.
+    """
+    __tablename__ = "control_status_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    control_id = Column(String, ForeignKey("controls.id", ondelete="CASCADE"), index=True, nullable=True)
+    control_code = Column(String, index=True)
+    old_status = Column(String, nullable=True)
+    new_status = Column(String)
+    source = Column(String, default="sync")  # sync, manual, scheduler
+    is_drift = Column(Boolean, default=False)  # Passing -> Failing/Warning regression
+    acknowledged = Column(Boolean, default=False)
+    detected_at = Column(Integer, index=True)
+
+    organization = relationship("Organization", back_populates="control_status_events")
+
+
+class RemediationTask(Base):
+    """An actionable task to fix a failing/at-risk control."""
+    __tablename__ = "remediation_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    control_id = Column(String, ForeignKey("controls.id", ondelete="SET NULL"), nullable=True)
+    control_code = Column(String, nullable=True)
+    owner_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    priority = Column(String, default="Medium")  # Critical, High, Medium, Low
+    status = Column(String, default="Open")  # Open, In Progress, Blocked, Done
+    due_date = Column(Integer, nullable=True)
+    created_at = Column(Integer)
+    updated_at = Column(Integer, nullable=True)
+
+    organization = relationship("Organization", back_populates="remediation_tasks")

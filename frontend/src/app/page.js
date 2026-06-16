@@ -39,6 +39,7 @@ export default function DashboardPage() {
   const [integrations, setIntegrations] = useState([]);
   const [activities, setActivities] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [drift, setDrift] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
@@ -61,6 +62,9 @@ export default function DashboardPage() {
 
       const deptData = await fetchJsonOrThrow(`${API_BASE_URL}/api/departments`, { headers });
       setDepartments(Array.isArray(deptData) ? deptData : []);
+
+      const driftData = await fetchJsonOrThrow(`${API_BASE_URL}/api/drift?only_drift=true&limit=10`, { headers });
+      setDrift(Array.isArray(driftData) ? driftData : []);
     } catch (err) {
       console.warn("Dashboard API unavailable; showing an empty dashboard.", err);
       setStats(DEFAULT_STATS);
@@ -68,6 +72,7 @@ export default function DashboardPage() {
       setIntegrations([]);
       setActivities([]);
       setDepartments([]);
+      setDrift([]);
     } finally {
       setLoading(false);
     }
@@ -97,6 +102,28 @@ export default function DashboardPage() {
     setTimeout(() => setSyncing(false), 1000);
   };
 
+  const acknowledgeDrift = async (id) => {
+    try {
+      const token = await getToken();
+      await fetch(`${API_BASE_URL}/api/drift/${id}/acknowledge`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      setDrift((prev) => prev.filter((d) => d.id !== id));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fmtAgo = (ts) => {
+    if (!ts) return "";
+    const diff = Math.floor(Date.now() / 1000) - ts;
+    if (diff < 60) return "just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  };
+
   return (
     <div className="p-8 space-y-8 max-w-7xl mx-auto w-full">
       {/* Header */}
@@ -122,6 +149,43 @@ export default function DashboardPage() {
           </button>
         </div>
       </div>
+
+      {/* Compliance Drift alert (continuous monitoring) */}
+      {drift.length > 0 && (
+        <div className="bg-amber-950/20 border border-amber-900/50 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle size={15} className="text-amber-400" />
+            <h3 className="font-semibold text-amber-200 text-sm">Compliance Drift Detected</h3>
+            <span className="text-[10px] text-amber-300/70 bg-amber-900/30 px-2 py-0.5 rounded-full border border-amber-900/50">
+              {drift.length} control{drift.length === 1 ? "" : "s"} regressed
+            </span>
+          </div>
+          <div className="space-y-2">
+            {drift.map((d) => (
+              <div key={d.id} className="flex items-center justify-between gap-3 text-xs bg-[#121215]/60 border border-zinc-800/60 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <span className="font-medium text-zinc-200">{d.control_title}</span>
+                  <span className="text-zinc-500 ml-2 font-mono text-[10px]">{d.control_code}</span>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-[11px]">
+                    <span className="text-emerald-400">{d.old_status}</span>
+                    <span className="text-zinc-600 mx-1">→</span>
+                    <span className="text-rose-400">{d.new_status}</span>
+                  </span>
+                  <span className="text-zinc-600 text-[10px] hidden sm:inline">{fmtAgo(d.detected_at)}</span>
+                  <button
+                    onClick={() => acknowledgeDrift(d.id)}
+                    className="text-[10px] text-zinc-400 hover:text-zinc-100 border border-zinc-800 hover:border-zinc-600 rounded px-2 py-0.5 transition-colors"
+                  >
+                    Acknowledge
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* KPI Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">

@@ -321,11 +321,13 @@ def remove_framework(db: Session, org_id: str, framework_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def apply_connector_result(db: Session, org_id: str, integration_id: str,
-                           compliant: bool, warning: bool = False) -> list[str]:
+                           compliant: bool, warning: bool = False,
+                           source: str = "sync") -> list[str]:
     """Flip every control mapped to ``integration_id`` based on a sync result.
 
-    Returns the list of control codes that were updated. Controls that have not
-    been imported (no row exists yet) are skipped silently.
+    Records a ControlStatusEvent for each status change and flags drift when a
+    previously-Passing control regresses. Returns the list of control codes that
+    were updated. Controls that have not been imported are skipped silently.
     """
     codes = _CONNECTOR_TO_CODES.get(integration_id, [])
     if not codes:
@@ -337,6 +339,20 @@ def apply_connector_result(db: Session, org_id: str, integration_id: str,
         ctrl = db.query(models.Control).filter_by(org_id=org_id, control_code=code).first()
         if not ctrl:
             continue
+        old_status = ctrl.status
+        if old_status != status:
+            # Drift = a previously-passing control regressing to a worse state.
+            is_drift = (old_status == "Passing" and status in ("Failing", "Warning"))
+            db.add(models.ControlStatusEvent(
+                org_id=org_id,
+                control_id=ctrl.id,
+                control_code=code,
+                old_status=old_status,
+                new_status=status,
+                source=source,
+                is_drift=is_drift,
+                detected_at=now,
+            ))
         ctrl.status = status
         ctrl.last_tested = now
         updated.append(code)
