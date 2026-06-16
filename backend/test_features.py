@@ -230,6 +230,97 @@ def test_failure_content_detection():
     print("SUCCESS: failure-content detection verified.")
 
 
+# ---------------------------------------------------------------------------
+# Notifications
+# ---------------------------------------------------------------------------
+
+def test_drift_creates_notification():
+    client.post("/api/frameworks/import", json={"framework_id": "gdpr"}, headers=AUTH)
+    db = database.SessionLocal()
+    try:
+        ctrl = db.query(models.Control).filter_by(org_id=ORG, control_code="GDPR-PII-01").first()
+        ctrl.status = "Passing"
+        db.commit()
+        framework_library.apply_connector_result(db, ORG, "aws", compliant=False, source="sync")
+    finally:
+        db.close()
+
+    res = client.get("/api/notifications", headers=AUTH)
+    assert res.status_code == 200
+    data = res.json()
+    drift_notes = [n for n in data["notifications"] if n["type"] == "drift"]
+    assert len(drift_notes) >= 1
+    assert data["unread_count"] >= 1
+
+    # Mark all read clears the count
+    client.post("/api/notifications/read-all", headers=AUTH)
+    after = client.get("/api/notifications?unread_only=true", headers=AUTH).json()
+    assert after["unread_count"] == 0
+
+    # Cleanup
+    db = database.SessionLocal()
+    try:
+        db.query(models.Notification).filter_by(org_id=ORG).delete()
+        db.query(models.ControlStatusEvent).filter_by(org_id=ORG).delete()
+        db.commit()
+    finally:
+        db.close()
+    client.delete("/api/frameworks/gdpr", headers=AUTH)
+    print("SUCCESS: drift notification verified.")
+
+
+def test_overdue_task_notification():
+    # Create a task already past due
+    created = client.post("/api/tasks", json={"title": "Overdue test", "due_date": 1000}, headers=AUTH)
+    tid = created.json()["id"]
+    res = client.get("/api/notifications", headers=AUTH).json()
+    overdue = [n for n in res["notifications"] if n["type"] == "overdue_task"]
+    assert len(overdue) >= 1
+    # Cleanup
+    client.delete(f"/api/tasks/{tid}", headers=AUTH)
+    db = database.SessionLocal()
+    try:
+        db.query(models.Notification).filter_by(org_id=ORG).delete()
+        db.commit()
+    finally:
+        db.close()
+    print("SUCCESS: overdue-task notification verified.")
+
+
+# ---------------------------------------------------------------------------
+# Reports / export
+# ---------------------------------------------------------------------------
+
+def test_gap_analysis_and_exports():
+    client.post("/api/frameworks/import", json={"framework_id": "soc-2"}, headers=AUTH)
+
+    # JSON gap analysis
+    rep = client.get("/api/reports/gap-analysis", headers=AUTH)
+    assert rep.status_code == 200
+    data = rep.json()
+    soc2 = next((f for f in data["frameworks"] if f["id"] == "soc-2"), None)
+    assert soc2 is not None and soc2["total_controls"] > 0
+
+    # CSV export
+    csv_res = client.get("/api/reports/export?format=csv", headers=AUTH)
+    assert csv_res.status_code == 200
+    assert "text/csv" in csv_res.headers["content-type"]
+    assert "Control Code" in csv_res.text
+
+    # PDF export -> valid PDF header + EOF
+    pdf_res = client.get("/api/reports/export?format=pdf", headers=AUTH)
+    assert pdf_res.status_code == 200
+    assert pdf_res.headers["content-type"] == "application/pdf"
+    assert pdf_res.content[:5] == b"%PDF-"
+    assert b"%%EOF" in pdf_res.content[-32:]
+
+    # Bad format -> 400
+    assert client.get("/api/reports/export?format=xml", headers=AUTH).status_code == 400
+
+    client.delete("/api/frameworks/soc-2", headers=AUTH)
+    print("SUCCESS: gap analysis + CSV/PDF export verified.")
+
+
 if __name__ == "__main__":
     test_framework_import_list_and_remove()
     test_shared_control_reuse_across_frameworks()

@@ -345,7 +345,7 @@ def apply_connector_result(db: Session, org_id: str, integration_id: str,
         if old_status != status:
             # Drift = a previously-passing control regressing to a worse state.
             is_drift = (old_status == "Passing" and status in ("Failing", "Warning"))
-            db.add(models.ControlStatusEvent(
+            event = models.ControlStatusEvent(
                 org_id=org_id,
                 control_id=ctrl.id,
                 control_code=code,
@@ -354,7 +354,17 @@ def apply_connector_result(db: Session, org_id: str, integration_id: str,
                 source=source,
                 is_drift=is_drift,
                 detected_at=now,
-            ))
+            )
+            db.add(event)
+            if is_drift:
+                # Flush to get the event id, then raise a notification.
+                db.flush()
+                try:
+                    import notifications
+                    notifications.notify_drift(db, org_id, code, ctrl.title,
+                                               old_status, status, event.id)
+                except Exception as e:
+                    print(f"Drift notification skipped for {code}: {e}")
         ctrl.status = status
         ctrl.last_tested = now
         updated.append(code)

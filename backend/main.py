@@ -2808,3 +2808,109 @@ def delete_remediation_task(task_id: str, db: Session = Depends(database.get_db)
     db.commit()
     return {"status": "deleted", "id": task_id}
 
+
+# --- Notifications ---
+
+@app.get("/api/notifications")
+def list_notifications(
+    unread_only: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """List notifications. Generates overdue-task alerts on read (idempotent)."""
+    import notifications as notif
+    try:
+        notif.generate_overdue_task_notifications(db, current_user.org_id)
+    except Exception as e:
+        print(f"Overdue notification generation skipped: {e}")
+
+    q = db.query(models.Notification).filter_by(org_id=current_user.org_id)
+    if unread_only:
+        q = q.filter(models.Notification.read == False)  # noqa: E712
+    items = q.order_by(models.Notification.created_at.desc()).limit(100).all()
+    unread = db.query(models.Notification).filter_by(org_id=current_user.org_id, read=False).count()
+    return {
+        "unread_count": unread,
+        "notifications": [
+            {
+                "id": n.id,
+                "type": n.type,
+                "severity": n.severity,
+                "title": n.title,
+                "message": n.message,
+                "link": n.link,
+                "read": n.read,
+                "created_at": n.created_at,
+            }
+            for n in items
+        ],
+    }
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    n = db.query(models.Notification).filter_by(id=notification_id, org_id=current_user.org_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    n.read = True
+    db.commit()
+    return {"status": "read", "id": notification_id}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    db.query(models.Notification).filter_by(org_id=current_user.org_id, read=False).update({"read": True})
+    db.commit()
+    return {"status": "all_read"}
+
+
+# --- Reports / export ---
+
+@app.get("/api/reports/gap-analysis")
+def get_gap_analysis(
+    framework_id: Optional[str] = Query(None),
+    include_ai: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """JSON gap analysis across imported frameworks (optionally one framework)."""
+    import reports
+    report = reports.build_gap_analysis(db, current_user.org_id, framework_id)
+    if include_ai:
+        report["executive_summary"] = reports.ai_executive_summary(report, current_user.org_id)
+    return report
+
+
+@app.get("/api/reports/export")
+def export_report(
+    format: str = Query("csv"),
+    framework_id: Optional[str] = Query(None),
+    include_ai: bool = Query(False),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
+):
+    """Download the gap analysis as CSV or PDF."""
+    import reports
+    from fastapi.responses import Response, PlainTextResponse
+    report = reports.build_gap_analysis(db, current_user.org_id, framework_id)
+    fmt = (format or "csv").lower()
+
+    if fmt == "csv":
+        body = reports.render_csv(report)
+        fname = reports.report_filename(report, framework_id, "csv")
+        return PlainTextResponse(
+            body,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    if fmt == "pdf":
+        summary = reports.ai_executive_summary(report, current_user.org_id) if include_ai else ""
+        body = reports.render_pdf(report, summary)
+        fname = reports.report_filename(report, framework_id, "pdf")
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    raise HTTPException(status_code=400, detail="format must be 'csv' or 'pdf'.")
+

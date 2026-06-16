@@ -26,6 +26,7 @@ class Organization(Base):
     vector_chunks = relationship("VectorChunk", back_populates="organization", cascade="all, delete-orphan")
     control_status_events = relationship("ControlStatusEvent", back_populates="organization", cascade="all, delete-orphan")
     remediation_tasks = relationship("RemediationTask", back_populates="organization", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="organization", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -284,3 +285,21 @@ class RemediationTask(Base):
     updated_at = Column(Integer, nullable=True)
 
     organization = relationship("Organization", back_populates="remediation_tasks")
+
+
+class Notification(Base):
+    """In-app alert surfaced in the notification feed."""
+    __tablename__ = "notifications"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    type = Column(String, default="info")  # drift, overdue_task, sync, info
+    severity = Column(String, default="info")  # critical, warning, info
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=True)
+    link = Column(String, nullable=True)  # in-app route to view the source
+    related_id = Column(String, nullable=True, index=True)  # dedup key (event id, task id...)
+    read = Column(Boolean, default=False)
+    created_at = Column(Integer, index=True)
+
+    organization = relationship("Organization", back_populates="notifications")
