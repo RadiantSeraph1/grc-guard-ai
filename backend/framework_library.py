@@ -263,11 +263,13 @@ def import_framework(db: Session, org_id: str, framework_id: str) -> dict:
             org_id=org_id, control_code=cdef["control_code"]
         ).first()
         if existing:
+            # Tag the control only with frameworks that are actually imported.
+            # (Tagging with the full library set would orphan controls on
+            # removal, since only imported frameworks ever get untagged.)
             tags = _csv_set(existing.frameworks)
-            # Keep the control's framework tags in sync with the library.
-            new_tags = tags | set(cdef["frameworks"])
-            if new_tags != tags:
-                existing.frameworks = ",".join(sorted(new_tags))
+            if framework_id not in tags:
+                tags.add(framework_id)
+                existing.frameworks = ",".join(sorted(tags))
                 linked += 1
         else:
             db.add(models.Control(
@@ -276,7 +278,7 @@ def import_framework(db: Session, org_id: str, framework_id: str) -> dict:
                 control_code=cdef["control_code"],
                 title=cdef["title"],
                 description=cdef["description"],
-                frameworks=",".join(sorted(cdef["frameworks"])),
+                frameworks=framework_id,
                 status="Failing",
             ))
             created += 1
