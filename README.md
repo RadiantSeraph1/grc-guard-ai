@@ -117,6 +117,41 @@ Claude for chat and OpenAI/Gemini for vectors): set `OPENAI_API_KEY`
 `GET /api/rag/corpus` reports `search_mode` (`semantic`/`lexical`) and
 `embedded_chunks`. After adding a key, re-ingest documents to vectorize them.
 
+## Custom Model Training & Datasets
+
+The `backend/training/` module assembles training data for three custom auditor
+models — **control mapping**, **compliance decision**, and **justification
+generation**. Each public source is normalized into one canonical JSONL schema.
+Full details and the "how it works" walkthrough are in
+[`backend/training/README.md`](backend/training/README.md); the strategy is in
+[`docs/MODEL_TRAINING_PLAN.md`](docs/MODEL_TRAINING_PLAN.md).
+
+The **NIST SP 800-53** control catalog ships in the repo
+(`backend/training/data/processed/nist_800_53_controls.jsonl`). Install the other
+datasets locally with:
+
+```bash
+# 1. Re-generate the NIST 800-53 catalog (no extra deps; already committed)
+python backend/training/scripts/build_oscal_controls.py
+
+# 2. Install the training/ML extras (kept separate from the API's requirements)
+python -m venv .venv-train
+.venv-train\Scripts\activate            # Windows  (use: source .venv-train/bin/activate on macOS/Linux)
+pip install -r backend/training/requirements-train.txt
+
+# 3. Labeled clause datasets from Hugging Face (LEDGAR, UNFAIR-ToS, CUAD)
+python backend/training/scripts/build_hf_clause_datasets.py --datasets ledgar unfair_tos cuad
+
+# 4. Compliance PASS/FAIL labels via weak supervision — point --iac-dir at a
+#    corpus of Terraform/CloudFormation/Kubernetes files (e.g. cloned public repos)
+pip install checkov
+python backend/training/scripts/gen_compliance_labels.py --iac-dir /path/to/iac
+```
+
+Generated outputs land in `backend/training/data/processed/`. The large ones
+(LEDGAR/CUAD/Checkov) are gitignored and meant to be regenerated with the scripts
+above; only the small NIST catalog is committed.
+
 ## Repository Structure
 
 ```text
@@ -124,6 +159,7 @@ backend/    FastAPI API, SQLAlchemy models, RAG, agno AI gateway, agents, connec
 backend/agent_os.py          Standalone AgentOS server (agno UI backend)
 backend/framework_library.py Importable framework catalog + connector->control mapping
 backend/rag.py               Hybrid semantic + lexical document retrieval
+backend/training/            Dataset acquisition + prep for custom auditor models
 frontend/   Next.js App Router UI with Clerk auth and operational dashboards
 agent-ui/   agno UI (chat interface for the AgentOS agents)
 docs/       PRD, TRD, UI/UX, AI backend, AI use, RAG, and analysis docs

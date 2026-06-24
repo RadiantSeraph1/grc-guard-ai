@@ -1,0 +1,24 @@
+# Training-data + model dependencies (kept SEPARATE from the app's
+# backend/requirements.txt so the API stays lightweight).
+#
+#   python -m venv .venv-train && . .venv-train/Scripts/activate   # Windows
+#   pip install -r backend/training/requirements-train.txt
+
+# --- data acquisition / prep ---
+requests>=2.31          # OSCAL catalog download (already in the app venv)
+datasets>=2.18          # Hugging Face dataset loading (LEDGAR, CUAD, UNFAIR-ToS)
+pandas>=2.0             # crosswalk joins / inspection
+scikit-learn>=1.3       # metrics, train/test split, baselines
+
+# --- weak supervision (compliance labels) ---
+checkov>=3.2            # static IaC scanner used to generate PASS/FAIL labels
+
+# --- Task 1 (control mapping) + Task 2 (classifier) ---
+sentence-transformers>=3.0
+transformers>=4.40
+torch>=2.2
+
+# --- Task 3 (optional generator fine-tune) ---
+# peft>=0.11
+# trl>=0.9
+# accelerate>=0.30
