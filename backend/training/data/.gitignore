@@ -1,0 +1,12 @@
+# Large downloads & caches are reproducible from the build scripts - don't commit.
+raw/
+interim/
+
+# By default keep generated datasets OUT of git (they can be large; regenerate
+# them with the build scripts). Exceptions are allow-listed below.
+processed/*.jsonl
+!processed/.gitkeep
+
+# Allow-listed: the NIST 800-53 control catalog is small (~1.1 MB) and is the
+# core control space, so we DO commit it. Large HF/Checkov outputs stay ignored.
+!processed/nist_800_53_controls.jsonl

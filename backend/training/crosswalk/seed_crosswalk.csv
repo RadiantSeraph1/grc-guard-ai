@@ -1,0 +1,18 @@
+source,external_label,our_framework,our_family,notes
+ledgar,Audits,soc-2,Audit and Accountability,Audit rights provisions map to logging/audit controls
+ledgar,Confidentiality,iso-27001,Access Control,Confidentiality obligations
+ledgar,Data Security,nist-800-53,System and Communications Protection,Security safeguards
+ledgar,Insurance,basel-iii,Risk Assessment,Operational risk transfer
+ledgar,Governing Law,gdpr,Compliance,Jurisdiction / regulatory scope
+unfair_tos,unfair,gdpr,Compliance,Unfair clause == potential GDPR violation
+cuad,Audit Rights,soc-2,Audit and Accountability,
+cuad,Insurance,basel-iii,Risk Assessment,
+cuad,Governing Law,gdpr,Compliance,
+checkov,CKV_AWS_18,nist-800-53,Audit and Accountability,S3 access logging (AU family)
+checkov,CKV_AWS_19,nist-800-53,System and Communications Protection,S3 encryption at rest (SC family)
+checkov,CKV_AWS_21,nist-800-53,Contingency Planning,S3 versioning (CP family)
+checkov,CKV_AWS_20,nist-800-53,Access Control,S3 public-read block (AC family)
+oscal,AC,nist-800-53,Access Control,NIST family prefix -> family name
+oscal,AU,nist-800-53,Audit and Accountability,
+oscal,SC,nist-800-53,System and Communications Protection,
+oscal,IA,nist-800-53,Identification and Authentication,
