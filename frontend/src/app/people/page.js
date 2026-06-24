@@ -1,193 +1,136 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useAuth } from "@clerk/nextjs";
-import { 
-  Users, Mail, Award, CheckCircle, ShieldAlert, 
-  Search, Bell, RefreshCw, X, CircleDot, AlertOctagon
-} from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { Mail, Bell, CircleDot, Users } from "lucide-react";
+import { useApi } from "../lib/api";
+import {
+  PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState, SearchInput,
+} from "../components/ui";
 
 export default function PeoplePage() {
-  const { getToken } = useAuth();
+  const api = useApi();
   const [people, setPeople] = useState([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [notifyingId, setNotifyingId] = useState(null);
 
-  const fetchPeople = async () => {
+  const fetchPeople = useCallback(async () => {
     try {
-      const token = await getToken();
-      const headers = { "Authorization": `Bearer ${token}` };
-      const res = await fetch(`${API_BASE_URL}/api/people`, { headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.get("/api/people");
       setPeople(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.warn("People unavailable; users are provisioned from Clerk on sign-in.");
+    } catch {
       setPeople([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [api]);
 
   useEffect(() => {
     fetchPeople();
-  }, []);
+  }, [fetchPeople]);
 
   const handleReminder = async (id) => {
     setNotifyingId(id);
     try {
-      const token = await getToken();
-      const headers = { "Authorization": `Bearer ${token}` };
-      const res = await fetch(`${API_BASE_URL}/api/people/${id}/trigger-training`, {
-        method: "POST",
-        headers
-      });
-      const data = await res.json();
-      if (data.status === "success") {
-        fetchPeople();
-      }
+      await api.post(`/api/people/${id}/trigger-training`);
+      await fetchPeople();
     } catch (err) {
-      setPeople(prev => prev.map(p => p.id === id ? { ...p, training_completed: true } : p));
+      console.error("Reminder failed", err);
     } finally {
       setNotifyingId(null);
     }
   };
 
-  const filtered = people.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || 
-    p.email.toLowerCase().includes(search.toLowerCase()) ||
-    p.department.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return people.filter(
+      (p) => p.name?.toLowerCase().includes(q) || p.email?.toLowerCase().includes(q) || p.department?.toLowerCase().includes(q)
+    );
+  }, [people, search]);
 
   return (
-    <div className="p-8 space-y-8 max-w-7xl mx-auto w-full">
-      {/* Title */}
-      <div>
-        <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Personnel Audits</span>
-        <h2 className="text-2xl font-semibold text-zinc-100 tracking-tight mt-0.5">People Directory</h2>
-        <p className="text-zinc-400 text-xs mt-0.5">
-          Review employee security parameters, track background check compliance, and monitor annual training sign-offs.
-        </p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="Personnel Audits"
+        title="People Directory"
+        description="Review employee security parameters, background-check compliance, and annual training sign-offs."
+      />
 
-      {/* Filter panel */}
-      <div className="flex flex-col md:flex-row gap-4 justify-between bg-[#121215] border border-zinc-800/80 p-4 rounded-xl items-center shadow-sm">
-        <div className="relative flex-1 max-w-md w-full">
-          <Search size={14} className="absolute left-3 top-3 text-zinc-550" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search employee name, email, department..."
-            className="w-full bg-zinc-900 border border-zinc-800 hover:border-zinc-750 focus:border-zinc-650 text-zinc-200 rounded-lg pl-9 pr-4 py-2 text-xs focus:outline-none transition-all placeholder-zinc-600"
+      <Card className="flex flex-col md:flex-row gap-4 justify-between items-center">
+        <SearchInput className="flex-1 w-full md:max-w-md" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, department…" />
+        <span className="flex items-center gap-2 text-xs text-zinc-500 bg-zinc-900 border border-zinc-800 px-3 py-2 rounded-lg shrink-0">
+          <CircleDot size={12} className="text-emerald-400 animate-pulse" />
+          Continuous employee checks active
+        </span>
+      </Card>
+
+      <Card className="p-0 overflow-hidden">
+        {loading ? (
+          <div className="p-5 space-y-3">
+            {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title={people.length === 0 ? "No employees provisioned" : "No employees match your search"}
+            description={people.length === 0 ? "Users are provisioned from Clerk on sign-in." : "Try a different search term."}
           />
-        </div>
-        
-        <div className="flex items-center space-x-2 text-[10px] text-zinc-500 bg-zinc-900 border border-zinc-800 px-3 py-2 rounded-lg">
-          <CircleDot size={12} className="text-emerald-450 animate-pulse" />
-          <span>Continuous employee checks are active</span>
-        </div>
-      </div>
-
-      {/* People roster list */}
-      <div className="bg-[#121215] border border-zinc-800/80 rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-zinc-900/40 border-b border-zinc-850 text-zinc-500 font-medium uppercase tracking-wider text-[10px]">
-                <th className="py-3.5 px-6">Name</th>
-                <th className="py-3.5 px-6">Department</th>
-                <th className="py-3.5 px-6 w-32">Role</th>
-                <th className="py-3.5 px-6 w-36 text-center">Background Check</th>
-                <th className="py-3.5 px-6 w-36 text-center">Security Training</th>
-                <th className="py-3.5 px-6 w-28 text-center">Status</th>
-                <th className="py-3.5 px-6 w-36 text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-zinc-550">Loading directory...</td>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm border-collapse min-w-[820px]">
+              <thead>
+                <tr className="bg-zinc-900/40 border-b border-zinc-800 text-zinc-500 text-xs uppercase tracking-wider">
+                  <th className="py-3.5 px-5 font-semibold">Name</th>
+                  <th className="py-3.5 px-5 font-semibold">Department</th>
+                  <th className="py-3.5 px-5 w-28 font-semibold">Role</th>
+                  <th className="py-3.5 px-5 w-32 text-center font-semibold">Background</th>
+                  <th className="py-3.5 px-5 w-32 text-center font-semibold">Training</th>
+                  <th className="py-3.5 px-5 w-24 text-center font-semibold">Status</th>
+                  <th className="py-3.5 px-5 w-36 text-center font-semibold">Action</th>
                 </tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-zinc-550">No employees found.</td>
-                </tr>
-              ) : (
-                filtered.map((item) => (
-                  <tr key={item.id} className="border-b border-zinc-850/50 hover:bg-zinc-900/10 transition-colors">
-                    <td className="py-3.5 px-6">
-                      <div className="font-semibold text-zinc-200">{item.name}</div>
-                      <span className="text-[10px] text-zinc-500 flex items-center mt-0.5 font-mono">
-                        <Mail size={10} className="mr-1 text-zinc-600" />
-                        {item.email}
+              </thead>
+              <tbody>
+                {filtered.map((item) => (
+                  <tr key={item.id} className="border-b border-zinc-800/50 hover:bg-zinc-900/30 transition-colors">
+                    <td className="py-3.5 px-5">
+                      <div className="font-medium text-zinc-200">{item.name}</div>
+                      <span className="text-xs text-zinc-500 flex items-center gap-1 mt-0.5 font-mono">
+                        <Mail size={11} className="text-zinc-600" />{item.email}
                       </span>
                     </td>
-                    <td className="py-3.5 px-6 text-zinc-400 font-medium">{item.department}</td>
-                    <td className="py-3.5 px-6 text-zinc-400 font-semibold">{item.role}</td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex items-center justify-center">
-                        {item.background_check_passed ? (
-                          <span className="inline-flex items-center text-[10px] font-semibold text-emerald-450 bg-emerald-500/5 border border-emerald-500/10 py-0.5 px-2 rounded">
-                            Passed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center text-[10px] font-semibold text-rose-455 bg-rose-500/5 border border-rose-500/10 py-0.5 px-2 rounded">
-                            Missing
-                          </span>
-                        )}
-                      </div>
+                    <td className="py-3.5 px-5 text-zinc-400">{item.department}</td>
+                    <td className="py-3.5 px-5 text-zinc-400 font-medium">{item.role}</td>
+                    <td className="py-3.5 px-5 text-center">
+                      <Badge variant={item.background_check_passed ? "success" : "danger"}>
+                        {item.background_check_passed ? "Passed" : "Missing"}
+                      </Badge>
                     </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex items-center justify-center">
-                        {item.training_completed ? (
-                          <span className="inline-flex items-center text-[10px] font-semibold text-emerald-450 bg-emerald-500/5 border border-emerald-500/10 py-0.5 px-2 rounded">
-                            Completed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center text-[10px] font-semibold text-amber-500 bg-amber-500/5 border border-amber-500/10 py-0.5 px-2 rounded">
-                            Pending
-                          </span>
-                        )}
-                      </div>
+                    <td className="py-3.5 px-5 text-center">
+                      <Badge variant={item.training_completed ? "success" : "warning"}>
+                        {item.training_completed ? "Completed" : "Pending"}
+                      </Badge>
                     </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex items-center justify-center">
-                        <span className="flex items-center text-[10px] font-semibold text-emerald-450">
-                          <CircleDot size={10} className="mr-1 text-emerald-500" />
-                          {item.status}
-                        </span>
-                      </div>
+                    <td className="py-3.5 px-5 text-center">
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
+                        <CircleDot size={11} className="text-emerald-500" />{item.status}
+                      </span>
                     </td>
-                    <td className="py-3.5 px-6">
-                      <div className="flex items-center justify-center">
-                        {!item.training_completed ? (
-                          <button
-                            onClick={() => handleReminder(item.id)}
-                            disabled={notifyingId === item.id}
-                            className="flex items-center space-x-1 text-zinc-300 hover:text-zinc-100 font-semibold border border-zinc-800 bg-zinc-900/60 py-1 px-2.5 rounded cursor-pointer text-[10px] transition-colors"
-                          >
-                            <Bell size={10} className={notifyingId === item.id ? "animate-bounce" : ""} />
-                            <span>{notifyingId === item.id ? "Notifying..." : "Notify Employee"}</span>
-                          </button>
-                        ) : (
-                          <span className="text-[10px] text-zinc-600">—</span>
-                        )}
-                      </div>
+                    <td className="py-3.5 px-5 text-center">
+                      {!item.training_completed ? (
+                        <Button size="sm" icon={Bell} loading={notifyingId === item.id} onClick={() => handleReminder(item.id)}>
+                          {notifyingId === item.id ? "Notifying…" : "Notify"}
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-zinc-600">—</span>
+                      )}
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </PageContainer>
   );
 }
-
-
-

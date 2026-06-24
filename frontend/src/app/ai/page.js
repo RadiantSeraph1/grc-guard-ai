@@ -1,37 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useAuth, useUser } from "@clerk/nextjs";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useUser } from "@clerk/nextjs";
 import {
   Plus, Send, Trash2, Loader2, Brain, Wrench, ChevronDown, ChevronRight,
-  Network, RefreshCw, MessageSquare, Sparkles, ArrowUpRight, Cpu, Check, AlertTriangle
+  Network, RefreshCw, MessageSquare, ArrowUpRight,
 } from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
-
-// Human labels + suggested model ids per provider. The model field is a free
-// text input backed by these suggestions, so any model id still works.
-const PROVIDER_META = {
-  claude: { label: "Anthropic Claude", models: ["claude-sonnet-4-5", "claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-opus-4-1"] },
-  openai: { label: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3-mini"] },
-  gemini: { label: "Google Gemini", models: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"] },
-  groq: { label: "Groq", models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b"] },
-  openrouter: { label: "OpenRouter", models: ["google/gemini-2.5-flash", "anthropic/claude-3.5-sonnet"] },
-  mistral: { label: "Mistral", models: ["mistral-large-latest", "mistral-small-latest"] },
-  deepseek: { label: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
-  perplexity: { label: "Perplexity", models: ["sonar-pro", "sonar"] },
-  xai: { label: "xAI Grok", models: ["grok-3-mini", "grok-2-latest"] },
-  azure_openai: { label: "Azure OpenAI", models: ["gpt-4o"] },
-  ollama: { label: "Ollama (local)", models: ["llama3.1", "qwen2.5"] },
-  local: { label: "Local server", models: ["local-model"] },
-  vast_ai: { label: "Vast.ai", models: ["custom-vllm"] },
-  custom: { label: "Custom endpoint", models: [] },
-  local_evidence: { label: "Local Evidence (offline)", models: [] },
-};
-const providerLabel = (id) => PROVIDER_META[id]?.label || (id || "").replace(/_/g, " ");
-const NO_KEY_NEEDED = ["local_evidence", "ollama", "local"];
+import { useApi } from "../lib/api";
 
 const AGENTS = [
   { id: "compliance_agent", name: "Compliance Agent", emoji: "📋", blurb: "Audits policy drafts against framework controls (Basel, GDPR, SOC 2, ISO 27001, PCI-DSS).", greeting: "Compliance Agent ready. Paste a policy draft or ask how a requirement maps to your controls." },
@@ -55,7 +30,7 @@ function newSession(agentId = "compliance_agent", createdAt = 0) {
 }
 
 export default function AiPage() {
-  const { getToken } = useAuth();
+  const api = useApi();
   const { user } = useUser();
 
   const [sessions, setSessions] = useState([]);
@@ -146,14 +121,7 @@ export default function AiPage() {
     setQuerying(true);
 
     try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/ai/agent-query`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: agentId, prompt }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post("/api/ai/agent-query", { agent_id: agentId, prompt });
       patchActive((s) => ({
         ...s,
         messages: [...s.messages, { role: "assistant", text: data.response || "(empty response)", steps: data.steps || [] }],
@@ -180,82 +148,13 @@ export default function AiPage() {
   const [graphNodes, setGraphNodes] = useState([]);
   const fetchGraph = useCallback(async () => {
     try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/ai/trust-graph`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error("Fetch failed");
-      const data = await res.json();
+      const data = await api.get("/api/ai/trust-graph");
       setGraphNodes(Array.isArray(data.nodes) ? data.nodes : []);
     } catch {
       setGraphNodes([]);
     }
-  }, [getToken]);
+  }, [api]);
   useEffect(() => { fetchGraph(); }, [fetchGraph]);
-
-  // ---- RAG corpus status (semantic vs lexical) --------------------------
-  const [corpus, setCorpus] = useState(null);
-  const fetchCorpus = useCallback(async () => {
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/rag/corpus`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error("Fetch failed");
-      setCorpus(await res.json());
-    } catch {
-      setCorpus(null);
-    }
-  }, [getToken]);
-  useEffect(() => { fetchCorpus(); }, [fetchCorpus]);
-
-  // ---- AI provider / model selection ------------------------------------
-  const [providers, setProviders] = useState([]);
-  const [modelMsg, setModelMsg] = useState(null);
-  const fetchProviders = useCallback(async () => {
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/settings/ai-providers`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error("Fetch failed");
-      const data = await res.json();
-      setProviders(Array.isArray(data) ? data : []);
-    } catch {
-      setProviders([]);
-    }
-  }, [getToken]);
-  useEffect(() => { fetchProviders(); }, [fetchProviders]);
-
-  const activeProvider = providers.find((p) => p.is_active) || null;
-
-  const selectProvider = async (id) => {
-    setModelMsg(null);
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/settings/ai-providers/${id}/activate`, {
-        method: "POST", headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || `Could not activate ${providerLabel(id)}`);
-      await fetchProviders();
-      setModelMsg({ ok: true, text: `${providerLabel(id)} is now the active model provider.` });
-    } catch (err) {
-      setModelMsg({ ok: false, text: err.message });
-    }
-  };
-
-  const saveModel = async (id, model) => {
-    setModelMsg(null);
-    try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/settings/ai-providers/${id}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model_override: model || null }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || "Could not save model");
-      await fetchProviders();
-      setModelMsg({ ok: true, text: model ? `Model set to ${model}.` : "Model reset to provider default." });
-    } catch (err) {
-      setModelMsg({ ok: false, text: err.message });
-    }
-  };
 
   const nodeColor = (status, type) => {
     if (type === "integration") return status === "Connected" ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/5" : "border-zinc-800 text-zinc-500 bg-zinc-900/50";
@@ -339,36 +238,7 @@ export default function AiPage() {
               <p className="text-[11px] text-zinc-500 truncate">{view === "graph" ? "GRC nodes and links from your live data." : currentAgent.blurb}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <ModelPicker
-              providers={providers}
-              activeProvider={activeProvider}
-              onSelect={selectProvider}
-              onSaveModel={saveModel}
-              message={modelMsg}
-            />
-            {corpus && (
-              <span
-                title={
-                  corpus.search_mode === "semantic"
-                    ? `Semantic vector search active — ${corpus.embedded_chunks}/${corpus.total_chunks} chunks embedded`
-                    : corpus.embeddings_available
-                      ? "Embedding provider configured, but ingested chunks are not vectorized yet. Re-ingest documents."
-                      : "Lexical search — set OPENAI_API_KEY or GEMINI_API_KEY to enable semantic search"
-                }
-                className={`hidden sm:inline-flex items-center gap-1.5 text-[10px] font-medium px-2.5 py-1 rounded-full border ${
-                  corpus.search_mode === "semantic"
-                    ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/5"
-                    : "border-zinc-700 text-zinc-400 bg-zinc-900/50"
-                }`}
-              >
-                <Sparkles size={11} />
-                {corpus.search_mode === "semantic" ? "Semantic RAG" : "Lexical RAG"}
-                <span className="text-zinc-500">· {corpus.total_chunks} chunks</span>
-              </span>
-            )}
-            <button onClick={createChat} className="md:hidden text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-lg p-2"><Plus size={15} /></button>
-          </div>
+          <button onClick={createChat} className="md:hidden text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-lg p-2"><Plus size={15} /></button>
         </header>
 
         {view === "graph" ? (
@@ -425,110 +295,6 @@ export default function AiPage() {
   );
 }
 
-function ModelPicker({ providers, activeProvider, onSelect, onSaveModel, message }) {
-  const [open, setOpen] = useState(false);
-  const [draftModel, setDraftModel] = useState("");
-  const ref = useRef(null);
-
-  const activeId = activeProvider?.id || "local_evidence";
-  const meta = PROVIDER_META[activeId] || { label: activeId, models: [] };
-  const currentModel = activeProvider?.model_override || (PROVIDER_META[activeId]?.models?.[0]) || "default";
-
-  useEffect(() => {
-    setDraftModel(activeProvider?.model_override || "");
-  }, [activeProvider?.id, activeProvider?.model_override]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onClick);
-    return () => document.removeEventListener("mousedown", onClick);
-  }, [open]);
-
-  const usable = (p) => p.has_key || NO_KEY_NEEDED.includes(p.id) || (p.api_key && p.api_key.length > 0);
-  const sorted = [...providers].sort((a, b) => providerLabel(a.id).localeCompare(providerLabel(b.id)));
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title="Choose AI provider and model"
-        className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/70 text-zinc-300 hover:border-zinc-600 transition-colors"
-      >
-        <Cpu size={12} className="text-zinc-400" />
-        <span className="hidden sm:inline">{meta.label}</span>
-        <span className="text-zinc-500 max-w-[120px] truncate hidden md:inline">· {currentModel}</span>
-        <ChevronDown size={12} className={`transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-
-      {open && (
-        <div className="absolute right-0 mt-2 w-72 bg-[#121215] border border-zinc-800 rounded-xl shadow-2xl shadow-black/50 z-50 p-3 space-y-3">
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Provider</label>
-            <select
-              value={activeId}
-              onChange={(e) => onSelect(e.target.value)}
-              className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 px-2.5 py-2 focus:outline-none focus:border-zinc-600 cursor-pointer"
-            >
-              {sorted.map((p) => (
-                <option key={p.id} value={p.id} disabled={!usable(p)}>
-                  {providerLabel(p.id)}{usable(p) ? "" : " (no key)"}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">Model</label>
-            <input
-              list="model-suggestions"
-              value={draftModel}
-              onChange={(e) => setDraftModel(e.target.value)}
-              placeholder={meta.models?.[0] || "provider default"}
-              className="mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 px-2.5 py-2 focus:outline-none focus:border-zinc-600"
-            />
-            <datalist id="model-suggestions">
-              {(meta.models || []).map((m) => <option key={m} value={m} />)}
-            </datalist>
-            <div className="flex flex-wrap gap-1 mt-2">
-              {(meta.models || []).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => { setDraftModel(m); onSaveModel(activeId, m); }}
-                  className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
-                    currentModel === m
-                      ? "border-zinc-500 text-zinc-100 bg-zinc-800"
-                      : "border-zinc-800 text-zinc-400 hover:border-zinc-600"
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <button
-            onClick={() => onSaveModel(activeId, draftModel.trim())}
-            className="w-full flex items-center justify-center gap-1.5 text-xs bg-zinc-100 hover:bg-white text-zinc-950 font-medium px-3 py-1.5 rounded-lg transition-colors"
-          >
-            <Check size={12} /> Apply model
-          </button>
-
-          {message && (
-            <div className={`flex items-start gap-1.5 text-[10px] ${message.ok ? "text-emerald-400" : "text-rose-400"}`}>
-              {message.ok ? <Check size={11} className="mt-0.5 shrink-0" /> : <AlertTriangle size={11} className="mt-0.5 shrink-0" />}
-              <span>{message.text}</span>
-            </div>
-          )}
-          <p className="text-[9px] text-zinc-600 leading-relaxed">
-            Providers without an API key are disabled — add keys in Settings → AI Gateway. Changes apply to your next message.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Message({ message, agent }) {
   const isUser = message.role === "user";
   if (isUser) {
@@ -546,53 +312,10 @@ function Message({ message, agent }) {
       <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-base shrink-0">{agent.emoji}</div>
       <div className="min-w-0 flex-1 space-y-2">
         {Array.isArray(message.steps) && message.steps.length > 0 && <ThinkingPanel steps={message.steps} />}
-        <div className="bg-[#16161a] border border-zinc-800/80 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-zinc-200 break-words leading-relaxed">
-          <MarkdownView text={message.text} />
+        <div className="bg-[#16161a] border border-zinc-800/80 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed">
+          {message.text}
         </div>
       </div>
-    </div>
-  );
-}
-
-// Renders assistant output as formatted markdown (tables, headings, lists,
-// code) with a dark theme — the ChatGPT/Claude-style readable layout.
-const MD_COMPONENTS = {
-  h1: (p) => <h1 className="text-base font-semibold text-zinc-100 mt-4 mb-2 first:mt-0" {...p} />,
-  h2: (p) => <h2 className="text-sm font-semibold text-zinc-100 mt-4 mb-2 first:mt-0" {...p} />,
-  h3: (p) => <h3 className="text-[13px] font-semibold text-zinc-100 mt-3 mb-1.5 first:mt-0" {...p} />,
-  p: (p) => <p className="my-2 first:mt-0 last:mb-0 leading-relaxed" {...p} />,
-  ul: (p) => <ul className="my-2 ml-1 space-y-1 list-disc list-inside marker:text-zinc-500" {...p} />,
-  ol: (p) => <ol className="my-2 ml-1 space-y-1 list-decimal list-inside marker:text-zinc-500" {...p} />,
-  li: (p) => <li className="leading-relaxed pl-1" {...p} />,
-  strong: (p) => <strong className="font-semibold text-zinc-100" {...p} />,
-  em: (p) => <em className="italic" {...p} />,
-  a: (p) => <a className="text-sky-400 underline underline-offset-2 hover:text-sky-300" target="_blank" rel="noreferrer" {...p} />,
-  blockquote: (p) => <blockquote className="border-l-2 border-zinc-700 pl-3 my-2 text-zinc-400 italic" {...p} />,
-  hr: () => <hr className="my-3 border-zinc-800" />,
-  code: ({ inline, className, children, ...rest }) =>
-    inline ? (
-      <code className="bg-[#0c0c0f] border border-zinc-800 rounded px-1.5 py-0.5 text-[12px] font-mono text-zinc-200" {...rest}>{children}</code>
-    ) : (
-      <code className="block bg-[#0c0c0f] border border-zinc-800 rounded-lg p-3 my-2 text-[12px] font-mono text-zinc-200 overflow-x-auto custom-scrollbar" {...rest}>{children}</code>
-    ),
-  pre: (p) => <pre className="my-2" {...p} />,
-  table: (p) => (
-    <div className="my-3 overflow-x-auto custom-scrollbar rounded-lg border border-zinc-800">
-      <table className="w-full text-xs border-collapse" {...p} />
-    </div>
-  ),
-  thead: (p) => <thead className="bg-zinc-900/60" {...p} />,
-  th: (p) => <th className="text-left font-semibold text-zinc-200 px-3 py-2 border-b border-zinc-800" {...p} />,
-  td: (p) => <td className="px-3 py-2 border-b border-zinc-800/60 text-zinc-300 align-top" {...p} />,
-  tr: (p) => <tr className="even:bg-zinc-900/20" {...p} />,
-};
-
-function MarkdownView({ text }) {
-  return (
-    <div className="text-sm text-zinc-200">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
-        {text || ""}
-      </ReactMarkdown>
     </div>
   );
 }

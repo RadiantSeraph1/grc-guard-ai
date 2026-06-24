@@ -37,15 +37,7 @@ FORMATTING_GUIDE = (
 # Tools (plain functions -> agno auto-wraps them as tools)
 # ---------------------------------------------------------------------------
 
-def search_compliance_corpus(query: str, org_id: str = DEFAULT_COMPANY_ID) -> str:
-    """Search the organization's ingested regulatory / evidence corpus (RAG).
-
-    Args:
-        query: The natural-language search query.
-        org_id: The organization key to scope the search to.
-    Returns:
-        Matching source chunks with filename and page number, or a notice if empty.
-    """
+def _search_compliance_corpus(query: str, org_id: str) -> str:
     matches = rag.search_documents(query, org_id=org_id, limit=4)
     if not matches:
         return "No documents have been ingested into the corpus yet for this organization."
@@ -54,14 +46,7 @@ def search_compliance_corpus(query: str, org_id: str = DEFAULT_COMPANY_ID) -> st
     )
 
 
-def get_grc_graph_state(org_id: str = DEFAULT_COMPANY_ID) -> str:
-    """Return the current control / risk / asset / integration posture for the org.
-
-    Args:
-        org_id: The organization key to scope the query to.
-    Returns:
-        A textual snapshot of nodes and their statuses (empty notice if none).
-    """
+def _get_grc_graph_state(org_id: str) -> str:
     db = database.SessionLocal()
     try:
         lines: List[str] = []
@@ -82,6 +67,49 @@ def get_grc_graph_state(org_id: str = DEFAULT_COMPANY_ID) -> str:
         db.close()
 
 
+def make_corpus_tool(org_id: str):
+    """Build an org-bound RAG search tool.
+
+    The org is captured in the closure so the LLM never has to (and cannot)
+    supply it — this enforces tenant isolation: each agent only ever searches
+    its own organization's corpus.
+    """
+    def search_compliance_corpus(query: str) -> str:
+        """Search this organization's ingested regulatory / evidence corpus (RAG).
+
+        Args:
+            query: The natural-language search query.
+        Returns:
+            Matching source chunks with filename and page number, or a notice if empty.
+        """
+        return _search_compliance_corpus(query, org_id)
+    return search_compliance_corpus
+
+
+def make_graph_tool(org_id: str):
+    """Build an org-bound GRC graph reader (tenant-isolated via closure)."""
+    def get_grc_graph_state() -> str:
+        """Return the current control / risk / asset / integration posture for this organization.
+
+        Returns:
+            A textual snapshot of nodes and their statuses (empty notice if none).
+        """
+        return _get_grc_graph_state(org_id)
+    return get_grc_graph_state
+
+
+# Backwards-compatible module-level tools (default org). Prefer the org-bound
+# `make_*_tool` factories above inside agents so tenant scoping is guaranteed.
+def search_compliance_corpus(query: str, org_id: str = DEFAULT_COMPANY_ID) -> str:
+    """Search an organization's ingested regulatory / evidence corpus (RAG)."""
+    return _search_compliance_corpus(query, org_id)
+
+
+def get_grc_graph_state(org_id: str = DEFAULT_COMPANY_ID) -> str:
+    """Return the current GRC posture for an organization."""
+    return _get_grc_graph_state(org_id)
+
+
 # ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
@@ -95,7 +123,7 @@ AGENT_DEFINITIONS = [
             "controls (Basel III, GDPR, SOC 2, ISO 27001, PCI-DSS). Always ground answers in the "
             "ingested corpus using the search tool. Identify alignment, gaps, and concrete fixes."
         ),
-        "tools": [search_compliance_corpus, get_grc_graph_state],
+        "tools": ["corpus", "graph"],
     },
     {
         "id": "tprm-agent",
@@ -105,7 +133,7 @@ AGENT_DEFINITIONS = [
             "questionnaires, outline inherent risks (data hosting, access, business continuity), "
             "and recommend an approval status (Approved / Under Assessment / Flagged) and a risk tier."
         ),
-        "tools": [search_compliance_corpus],
+        "tools": ["corpus"],
     },
     {
         "id": "customer-trust-agent",
@@ -115,7 +143,7 @@ AGENT_DEFINITIONS = [
             "professionally and reassuringly, grounded in the organization's actual controls. Use the "
             "search tool and the GRC graph to cite real posture; never invent controls that do not exist."
         ),
-        "tools": [search_compliance_corpus, get_grc_graph_state],
+        "tools": ["corpus", "graph"],
     },
     {
         "id": "risk-propagation-agent",
@@ -125,7 +153,7 @@ AGENT_DEFINITIONS = [
             "assets and integrations in the Trust Graph, and recommend specific control tests or "
             "mitigations to lower residual risk. Always read the live graph state first."
         ),
-        "tools": [get_grc_graph_state, search_compliance_corpus],
+        "tools": ["graph", "corpus"],
     },
 ]
 
@@ -161,8 +189,16 @@ def _model_for_org(org_id: Optional[str]):
 
 
 def build_grc_agents(org_id: str = DEFAULT_COMPANY_ID) -> List[Agent]:
-    """Construct the full set of GRC agno agents for an organization."""
+    """Construct the full set of GRC agno agents for an organization.
+
+    Tools are bound to `org_id` via closures so every agent reads only its own
+    tenant's corpus and graph — the LLM cannot cross organizations.
+    """
     model = _model_for_org(org_id)
+    tool_registry = {
+        "corpus": make_corpus_tool(org_id),
+        "graph": make_graph_tool(org_id),
+    }
     agents: List[Agent] = []
     for d in AGENT_DEFINITIONS:
         agents.append(Agent(
@@ -170,7 +206,7 @@ def build_grc_agents(org_id: str = DEFAULT_COMPANY_ID) -> List[Agent]:
             name=d["name"],
             model=model,
             instructions=d["instructions"] + FORMATTING_GUIDE,
-            tools=d["tools"],
+            tools=[tool_registry[key] for key in d["tools"]],
             markdown=True,
             telemetry=False,
         ))

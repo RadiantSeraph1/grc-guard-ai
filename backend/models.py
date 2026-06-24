@@ -243,6 +243,26 @@ class VectorChunk(Base):
 
     organization = relationship("Organization", back_populates="vector_chunks")
 
+class ComplianceSnapshot(Base):
+    """Daily point-in-time snapshot of an org's posture.
+
+    Recorded (deduped per UTC day) whenever the dashboard stats are read, so the
+    trends endpoint can serve a REAL history instead of synthetic curves. Empty
+    until the app has been used across multiple days — which the UI shows
+    honestly rather than fabricating a trend line.
+    """
+    __tablename__ = "compliance_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    day = Column(String, index=True)  # YYYY-MM-DD (UTC) — one snapshot per org per day
+    timestamp = Column(Integer)
+    compliance_score = Column(Integer, default=0)
+    average_residual_risk = Column(Float, default=0.0)
+    total_controls = Column(Integer, default=0)
+    passing_controls = Column(Integer, default=0)
+    open_risks = Column(Integer, default=0)
+
 
 class ControlStatusEvent(Base):
     """Append-only history of control status changes.
