@@ -20,6 +20,18 @@ import rag
 
 DEFAULT_COMPANY_ID = "bank_enterprise"
 
+# Shared output-formatting contract appended to every agent. Keeps responses
+# clean and structured (Markdown is rendered by the UI), with no decorative
+# emojis or ASCII separators.
+FORMATTING_GUIDE = (
+    "\n\nOutput format rules:\n"
+    "- Write in clean, well-structured Markdown that renders nicely (the UI renders Markdown).\n"
+    "- Use short section headings, bullet lists, and bold labels to organise the answer.\n"
+    "- When comparing items or listing controls/gaps, use a proper Markdown table with a header row.\n"
+    "- Do NOT use emojis. Do NOT use decorative ASCII separators or horizontal rules.\n"
+    "- Keep prose tight; prefer lists and tables over long paragraphs. Be specific and grounded."
+)
+
 
 # ---------------------------------------------------------------------------
 # Tools (plain functions -> agno auto-wraps them as tools)
@@ -193,7 +205,7 @@ def build_grc_agents(org_id: str = DEFAULT_COMPANY_ID) -> List[Agent]:
             id=d["id"],
             name=d["name"],
             model=model,
-            instructions=d["instructions"],
+            instructions=d["instructions"] + FORMATTING_GUIDE,
             tools=[tool_registry[key] for key in d["tools"]],
             markdown=True,
             telemetry=False,
@@ -213,14 +225,17 @@ def build_agent(agent_id: str, org_id: str = DEFAULT_COMPANY_ID) -> Optional[Age
 # ---------------------------------------------------------------------------
 
 def _run(agent_id: str, prompt: str, org_id: str) -> str:
-    agent = build_agent(agent_id, org_id)
-    if agent is None:
-        return ai_gateway.generate_content(prompt, org_id=org_id)
     try:
-        return (agent.run(prompt).content or "").strip()
+        agent = build_agent(agent_id, org_id)
+        if agent is None:
+            return _grounded_fallback(prompt, org_id)
+        content = (agent.run(prompt).content or "").strip()
+        if _is_failure_content(content):
+            return _grounded_fallback(prompt, org_id)
+        return content
     except Exception as e:
         print(f"Agent {agent_id} run failed: {e}. Falling back to gateway.")
-        return ai_gateway.generate_content(prompt, org_id=org_id)
+        return _grounded_fallback(prompt, org_id)
 
 
 def _extract_steps(result) -> list:
@@ -254,17 +269,67 @@ def _extract_steps(result) -> list:
     return steps
 
 
-def run_agent_detailed(agent_id: str, prompt: str, org_id: str) -> dict:
-    """Run an agent and return both its answer and the steps it took."""
-    agent = build_agent(agent_id, org_id)
-    if agent is None:
-        return {"content": ai_gateway.generate_content(prompt, org_id=org_id), "steps": []}
+# Markers that indicate the model emitted a provider/tool-calling error as its
+# "answer" rather than actually answering. Common with smaller models (e.g.
+# Groq llama) that struggle with structured function calling.
+_TOOL_FAILURE_MARKERS = (
+    "failed to call a function",
+    "failed_generation",
+    "tool call validation failed",
+    "function call",
+)
+
+
+def _is_failure_content(content: str) -> bool:
+    if not content or not content.strip():
+        return True
+    low = content.lower()
+    return any(m in low for m in _TOOL_FAILURE_MARKERS)
+
+
+def _grounded_fallback(prompt: str, org_id: str) -> str:
+    """Plain (no-tool) answer, but still grounded by injecting the corpus + graph
+    context into the prompt so a tool-incapable model keeps GRC grounding."""
     try:
+        corpus = search_compliance_corpus(prompt, org_id=org_id)
+    except Exception:
+        corpus = ""
+    try:
+        graph = get_grc_graph_state(org_id=org_id)
+    except Exception:
+        graph = ""
+    grounded_prompt = (
+        f"{prompt}\n\n---\nReference material (use if relevant):\n"
+        f"[Corpus]\n{corpus}\n\n[GRC graph]\n{graph}"
+    )
+    return ai_gateway.generate_content(
+        grounded_prompt,
+        "You are a senior banking GRC analysis agent." + FORMATTING_GUIDE,
+        org_id=org_id,
+    )
+
+
+def run_agent_detailed(agent_id: str, prompt: str, org_id: str) -> dict:
+    """Run an agent and return both its answer and the steps it took.
+
+    Every failure path (agent construction, model build, the run itself, or a
+    model that emits a tool-calling error as its answer) degrades to a grounded
+    no-tool gateway call, so the endpoint always returns a usable answer.
+    """
+    try:
+        agent = build_agent(agent_id, org_id)
+        if agent is None:
+            return {"content": _grounded_fallback(prompt, org_id), "steps": []}
         result = agent.run(prompt)
-        return {"content": (result.content or "").strip(), "steps": _extract_steps(result)}
+        content = (result.content or "").strip()
+        if _is_failure_content(content):
+            print(f"Agent {agent_id} returned a tool-failure answer; using grounded fallback.")
+            return {"content": _grounded_fallback(prompt, org_id),
+                    "steps": _extract_steps(result)}
+        return {"content": content, "steps": _extract_steps(result)}
     except Exception as e:
         print(f"Agent {agent_id} detailed run failed: {e}. Falling back to gateway.")
-        return {"content": ai_gateway.generate_content(prompt, org_id=org_id), "steps": []}
+        return {"content": _grounded_fallback(prompt, org_id), "steps": []}
 
 
 class ComplianceAgent:

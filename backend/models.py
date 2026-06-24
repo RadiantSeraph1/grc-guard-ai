@@ -24,6 +24,9 @@ class Organization(Base):
     policy_acknowledgments = relationship("PolicyAcknowledgment", back_populates="organization", cascade="all, delete-orphan")
     comments = relationship("AuditComment", back_populates="organization", cascade="all, delete-orphan")
     vector_chunks = relationship("VectorChunk", back_populates="organization", cascade="all, delete-orphan")
+    control_status_events = relationship("ControlStatusEvent", back_populates="organization", cascade="all, delete-orphan")
+    remediation_tasks = relationship("RemediationTask", back_populates="organization", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="organization", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -259,3 +262,64 @@ class ComplianceSnapshot(Base):
     total_controls = Column(Integer, default=0)
     passing_controls = Column(Integer, default=0)
     open_risks = Column(Integer, default=0)
+
+
+class ControlStatusEvent(Base):
+    """Append-only history of control status changes.
+
+    Powers drift detection (a Passing control regressing to Failing/Warning)
+    and historical readiness trends. Written whenever a control's status
+    changes, primarily from connector syncs.
+    """
+    __tablename__ = "control_status_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    control_id = Column(String, ForeignKey("controls.id", ondelete="CASCADE"), index=True, nullable=True)
+    control_code = Column(String, index=True)
+    old_status = Column(String, nullable=True)
+    new_status = Column(String)
+    source = Column(String, default="sync")  # sync, manual, scheduler
+    is_drift = Column(Boolean, default=False)  # Passing -> Failing/Warning regression
+    acknowledged = Column(Boolean, default=False)
+    detected_at = Column(Integer, index=True)
+
+    organization = relationship("Organization", back_populates="control_status_events")
+
+
+class RemediationTask(Base):
+    """An actionable task to fix a failing/at-risk control."""
+    __tablename__ = "remediation_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    control_id = Column(String, ForeignKey("controls.id", ondelete="SET NULL"), nullable=True)
+    control_code = Column(String, nullable=True)
+    owner_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    priority = Column(String, default="Medium")  # Critical, High, Medium, Low
+    status = Column(String, default="Open")  # Open, In Progress, Blocked, Done
+    due_date = Column(Integer, nullable=True)
+    created_at = Column(Integer)
+    updated_at = Column(Integer, nullable=True)
+
+    organization = relationship("Organization", back_populates="remediation_tasks")
+
+
+class Notification(Base):
+    """In-app alert surfaced in the notification feed."""
+    __tablename__ = "notifications"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    type = Column(String, default="info")  # drift, overdue_task, sync, info
+    severity = Column(String, default="info")  # critical, warning, info
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=True)
+    link = Column(String, nullable=True)  # in-app route to view the source
+    related_id = Column(String, nullable=True, index=True)  # dedup key (event id, task id...)
+    read = Column(Boolean, default=False)
+    created_at = Column(Integer, index=True)
+
+    organization = relationship("Organization", back_populates="notifications")

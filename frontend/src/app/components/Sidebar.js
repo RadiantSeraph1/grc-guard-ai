@@ -4,20 +4,22 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { UserButton, SignOutButton } from "@clerk/nextjs";
-import { 
-  LayoutDashboard, ShieldCheck, FileText, AlertTriangle, 
-  Users, FolderKanban, ShieldAlert, Library, Database, 
+import { UserButton, SignOutButton, useAuth } from "@clerk/nextjs";
+import {
+  LayoutDashboard, ShieldCheck, FileText, AlertTriangle,
+  Users, FolderKanban, ShieldAlert, Library, Database,
   Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight,
-  Activity, Radio, Link2, LogOut
+  Activity, Radio, Link2, LogOut, Layers, ClipboardList, Bell, FileBarChart
 } from "lucide-react";
 import { API_BASE_URL } from "../lib/api";
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const { getToken } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
   const [apiStatus, setApiStatus] = useState("checking");
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Check API health status
   useEffect(() => {
@@ -33,12 +35,35 @@ export default function Sidebar() {
       .catch(() => setApiStatus("offline"));
   }, [pathname]);
 
+  // Poll unread notification count
+  useEffect(() => {
+    let active = true;
+    const fetchUnread = async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const res = await fetch(`${API_BASE_URL}/api/notifications?unread_only=true`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (active) setUnreadCount(data.unread_count || 0);
+      } catch { /* ignore */ }
+    };
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => { active = false; clearInterval(interval); };
+  }, [getToken, pathname]);
+
   const navItems = [
     { category: "OVERVIEW", items: [
-      { name: "Dashboard", href: "/", icon: LayoutDashboard }
+      { name: "Dashboard", href: "/", icon: LayoutDashboard },
+      { name: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount }
     ]},
     { category: "GOVERNANCE", items: [
       { name: "Controls Monitor", href: "/controls", icon: ShieldCheck },
+      { name: "Frameworks Library", href: "/frameworks", icon: Layers },
+      { name: "Remediation Tasks", href: "/tasks", icon: ClipboardList },
       { name: "Policies Manager", href: "/policies", icon: FileText }
     ]},
     { category: "RISK & VENDORS", items: [
@@ -56,6 +81,7 @@ export default function Sidebar() {
     ]},
     { category: "AUDIT & TRUST", items: [
       { name: "Auditor Portal", href: "/audit", icon: Scale },
+      { name: "Compliance Reports", href: "/reports", icon: FileBarChart },
       { name: "Trust Center", href: "/trust", icon: FileCode }
     ]},
     { category: "COGNITIVES", items: [
@@ -150,17 +176,27 @@ export default function Sidebar() {
                 const Icon = item.icon;
                 const isActive = pathname === item.href;
                 return (
-                  <Link 
+                  <Link
                     key={itemIdx}
                     href={item.href}
-                    className={`flex items-center space-x-2.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-150 ${
-                      isActive 
-                        ? "bg-zinc-800/80 text-zinc-100 font-medium" 
+                    className={`relative flex items-center space-x-2.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-150 ${
+                      isActive
+                        ? "bg-zinc-800/80 text-zinc-100 font-medium"
                         : "hover:bg-zinc-900/60 hover:text-zinc-200"
                     }`}
                   >
-                    <Icon size={14} className={isActive ? "text-zinc-150" : "text-zinc-500"} />
-                    {isExpanded && <span className="truncate">{item.name}</span>}
+                    <span className="relative">
+                      <Icon size={14} className={isActive ? "text-zinc-150" : "text-zinc-500"} />
+                      {item.badge > 0 && !isExpanded && (
+                        <span className="absolute -top-1.5 -right-1.5 w-1.5 h-1.5 rounded-full bg-rose-500" />
+                      )}
+                    </span>
+                    {isExpanded && <span className="truncate flex-1">{item.name}</span>}
+                    {isExpanded && item.badge > 0 && (
+                      <span className="text-[9px] font-bold bg-rose-500 text-white rounded-full px-1.5 py-0.5 min-w-[16px] text-center">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    )}
                   </Link>
                 );
               })}
