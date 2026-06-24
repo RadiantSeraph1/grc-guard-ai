@@ -1,17 +1,14 @@
 "use client";
 
 import { UserProfile } from "@clerk/nextjs";
+import { PageContainer, PageHeader, Card } from "../components/ui";
 
 export default function AccountPage() {
   return (
-    <div className="min-h-screen p-8 bg-[#09090b] text-zinc-100">
-      <div className="max-w-5xl mx-auto space-y-6">
-        <div>
-          <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Account</span>
-          <h2 className="text-2xl font-semibold tracking-tight mt-0.5">Profile Settings</h2>
-        </div>
+    <PageContainer className="max-w-5xl">
+      <PageHeader eyebrow="Account" title="Profile Settings" description="Manage your sign-in credentials, connected accounts, and security." />
 
-        <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 shadow-sm">
+      <Card>
           <UserProfile
             appearance={{
               variables: {
@@ -40,8 +37,7 @@ export default function AccountPage() {
               },
             }}
           />
-        </div>
-      </div>
-    </div>
+      </Card>
+    </PageContainer>
   );
 }

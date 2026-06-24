@@ -8,11 +8,33 @@
   --border: #27272a;
   --input: #18181b;
   --ring: #d4d4d8;
+
+  /* Surfaces — layered elevation for a less flat, more premium feel */
+  --surface-1: #0e0e11;
+  --surface-2: #16161a;
+  --surface-3: #1c1c21;
+  --border-subtle: rgba(63, 63, 70, 0.4);
+  --border-strong: rgba(82, 82, 91, 0.6);
+
+  /* Brand accent — used sparingly for primary actions & active states */
+  --accent: #6366f1;
+  --accent-foreground: #ffffff;
+  --accent-soft: rgba(99, 102, 241, 0.12);
+
+  /* Semantic status colors */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #fb7185;
+  --muted: #a1a1aa;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-accent: var(--accent);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --font-sans: var(--font-inter), sans-serif;
 }
 
@@ -74,6 +96,53 @@ body {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* ── Motion & feedback primitives ──────────────────────────────────── */
+
+/* Shimmer used by <Skeleton> loading placeholders */
+@keyframes ui-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.ui-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 37%,
+    var(--surface-2) 63%
+  );
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+/* Subtle entrance for newly rendered content */
+@keyframes ui-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ui-fade-in {
+  animation: ui-fade-in 0.35s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* Card hover lift used across the redesigned surfaces */
+.ui-card {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.875rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.ui-card-hover:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 8px 28px -12px rgba(0, 0, 0, 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-skeleton,
+  .ui-fade-in {
+    animation: none;
+  }
 }
 
 @media (max-width: 768px) {

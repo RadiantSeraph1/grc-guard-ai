@@ -11,8 +11,7 @@ import {
   Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight,
   Activity, Radio, Link2, LogOut
 } from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "../lib/api";
 
 export default function Sidebar() {
   const pathname = usePathname();

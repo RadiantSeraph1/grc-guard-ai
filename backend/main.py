@@ -1175,7 +1175,12 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
         provider_id,
         provider_status
     )
-        
+
+    # 4. Real decision confidence — derived from the actual signal strength of
+    # this scan (top attribution weight + breadth of strong signals + how much
+    # matching evidence was retrieved), not a hardcoded constant.
+    confidence = compute_scan_confidence(attributions, matched_regs)
+
     # 5. Save Audit Log (Encrypting sensitive fields if BYOK is provided)
     log_id = str(uuid.uuid4())
     timestamp = int(time.time())
@@ -1206,11 +1211,29 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
         "timestamp": timestamp,
         "decision": decision,
         "category": category,
+        "confidence": confidence,
         "justification": justification,
         "attributions": attributions,
         "reasoning_trace": reasoning_trace,
         "is_encrypted": bool(is_encrypted)
     }
+
+def compute_scan_confidence(attributions: list, matched_regs: list) -> float:
+    """Derive a 0..1 confidence score from real scan signals.
+
+    Combines the strongest token attribution, the number of strong signals, and
+    how much matching evidence was retrieved from the RAG corpus. Returns a
+    rounded float so the UI can show a real, explainable percentage instead of a
+    fixed placeholder.
+    """
+    weights = [float(a.get("attribution", 0) or 0) for a in (attributions or [])]
+    top = max(weights) if weights else 0.0
+    strong_signals = sum(1 for w in weights if w >= 0.4)
+    evidence_factor = min(len(matched_regs or []), 3) / 3.0  # 0..1
+
+    # Weighted blend, clamped to a sane floor/ceiling.
+    score = (0.55 * top) + (0.20 * min(strong_signals / 3.0, 1.0)) + (0.25 * evidence_factor)
+    return round(max(0.5, min(0.99, score)), 2)
 
 @app.get("/api/logs")
 def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
@@ -1565,7 +1588,53 @@ def get_dashboard_stats(department: Optional[str] = Query(None), db: Session = D
     
     active_integrations = db.query(models.Integration).filter_by(status="Connected", org_id=current_user.org_id).count()
     total_integrations = db.query(models.Integration).filter_by(org_id=current_user.org_id).count()
-    
+
+    # Real risk severity matrix: count actual risks per (impact x likelihood) cell.
+    # Returned as a flat list so the UI can render a 5x5 grid without inferring
+    # any counts client-side (previously the grid was hardcoded).
+    matrix_counts = {}
+    high_risk_count = 0
+    for r in risks:
+        impact = max(1, min(5, int(r.impact or 1)))
+        likelihood = max(1, min(5, int(r.likelihood or 1)))
+        matrix_counts[(impact, likelihood)] = matrix_counts.get((impact, likelihood), 0) + 1
+        if (r.residual_score or 0) >= 15:
+            high_risk_count += 1
+    risk_matrix = [
+        {"impact": impact, "likelihood": likelihood, "count": matrix_counts.get((impact, likelihood), 0)}
+        for impact in range(1, 6)
+        for likelihood in range(1, 6)
+    ]
+
+    # Real evidence freshness summary (drives audit-readiness signals honestly).
+    evidence = db.query(models.Evidence).filter_by(org_id=current_user.org_id).all()
+    evidence_summary = {
+        "total": len(evidence),
+        "current": sum(1 for e in evidence if e.freshness == "Current"),
+        "expiring": sum(1 for e in evidence if e.freshness == "Expiring"),
+        "expired": sum(1 for e in evidence if e.freshness == "Expired"),
+    }
+
+    # Audit readiness is derived from real signals rather than a fabricated
+    # countdown. `days_until_next_audit` is only populated when the org has set
+    # one (no such field yet) — null means "not scheduled", which the UI shows
+    # honestly instead of inventing a number.
+    next_audit_at = getattr(current_user.organization, "next_audit_at", None)
+    days_until_next_audit = None
+    if next_audit_at:
+        days_until_next_audit = max(0, (int(next_audit_at) - int(time.time())) // 86400)
+
+    # Record a once-per-day posture snapshot so /api/dashboard/trends has real
+    # history to serve. Only for the org-wide view (no department filter) to keep
+    # the series consistent. Also expose the delta vs. the previous snapshot.
+    compliance_delta = None
+    if not department:
+        compliance_delta = record_compliance_snapshot(
+            db, current_user.org_id, compliance_score, round(avg_residual, 1),
+            total_controls, passing_controls,
+            sum(1 for r in risks if r.status == "Open"),
+        )
+
     return {
         "company": DEFAULT_COMPANY_NAME,
         "department": department or "All Departments",
@@ -1575,10 +1644,50 @@ def get_dashboard_stats(department: Optional[str] = Query(None), db: Session = D
         "warning_controls_count": warning_controls,
         "passing_controls_count": passing_controls,
         "total_controls_count": total_controls,
+        "total_risks_count": len(risks),
+        "high_risks_count": high_risk_count,
         "active_integrations": active_integrations,
         "total_integrations": total_integrations,
-        "days_until_next_audit": 18
+        "risk_matrix": risk_matrix,
+        "evidence_summary": evidence_summary,
+        "days_until_next_audit": days_until_next_audit,
+        "compliance_delta": compliance_delta,
     }
+
+def record_compliance_snapshot(db, org_id, compliance_score, avg_residual, total_controls, passing_controls, open_risks):
+    """Upsert today's snapshot for an org and return the day-over-day compliance
+    delta vs. the most recent *prior* day (None when there's no prior history)."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+
+    # Compute delta against the latest snapshot from a previous day.
+    prior = (
+        db.query(models.ComplianceSnapshot)
+        .filter(models.ComplianceSnapshot.org_id == org_id, models.ComplianceSnapshot.day < today)
+        .order_by(models.ComplianceSnapshot.day.desc())
+        .first()
+    )
+    delta = (compliance_score - prior.compliance_score) if prior else None
+
+    existing = (
+        db.query(models.ComplianceSnapshot)
+        .filter_by(org_id=org_id, day=today)
+        .first()
+    )
+    if existing:
+        existing.timestamp = int(time.time())
+        existing.compliance_score = compliance_score
+        existing.average_residual_risk = avg_residual
+        existing.total_controls = total_controls
+        existing.passing_controls = passing_controls
+        existing.open_risks = open_risks
+    else:
+        db.add(models.ComplianceSnapshot(
+            org_id=org_id, day=today, timestamp=int(time.time()),
+            compliance_score=compliance_score, average_residual_risk=avg_residual,
+            total_controls=total_controls, passing_controls=passing_controls, open_risks=open_risks,
+        ))
+    db.commit()
+    return delta
 
 @app.get("/api/departments")
 def get_departments(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
@@ -1606,11 +1715,25 @@ def get_departments(db: Session = Depends(database.get_db), current_user: models
     return result
 
 @app.get("/api/dashboard/trends")
-def get_dashboard_trends(current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+def get_dashboard_trends(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Real posture history from recorded daily snapshots (most recent 30 days).
+
+    Returns empty series until at least one snapshot exists; the UI renders that
+    honestly ("not enough history yet") instead of a fabricated curve.
+    """
+    snapshots = (
+        db.query(models.ComplianceSnapshot)
+        .filter_by(org_id=current_user.org_id)
+        .order_by(models.ComplianceSnapshot.day.desc())
+        .limit(30)
+        .all()
+    )
+    snapshots = list(reversed(snapshots))  # chronological
     return {
-        "labels": [f"Day {i}" for i in range(1, 31)],
-        "compliance_trend": [50 + int(i * 1.2) for i in range(1, 31)],
-        "risk_trend": [15 - int(i * 0.25) for i in range(1, 31)]
+        "labels": [s.day for s in snapshots],
+        "compliance_trend": [s.compliance_score for s in snapshots],
+        "risk_trend": [round(s.average_residual_risk, 1) for s in snapshots],
+        "points": len(snapshots),
     }
 
 # 3. Integrations Management

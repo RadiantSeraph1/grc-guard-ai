@@ -1,13 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useAuth, useUser } from "@clerk/nextjs";
+import { useUser } from "@clerk/nextjs";
 import {
   Plus, Send, Trash2, Loader2, Brain, Wrench, ChevronDown, ChevronRight,
-  Network, RefreshCw, MessageSquare, Sparkles, ArrowUpRight, Cpu
+  Network, RefreshCw, MessageSquare, ArrowUpRight,
 } from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { useApi } from "../lib/api";
 
 const AGENTS = [
   { id: "compliance_agent", name: "Compliance Agent", emoji: "📋", blurb: "Audits policy drafts against framework controls (Basel, GDPR, SOC 2, ISO 27001, PCI-DSS).", greeting: "Compliance Agent ready. Paste a policy draft or ask how a requirement maps to your controls." },
@@ -31,7 +30,7 @@ function newSession(agentId = "compliance_agent", createdAt = 0) {
 }
 
 export default function AiPage() {
-  const { getToken } = useAuth();
+  const api = useApi();
   const { user } = useUser();
 
   const [sessions, setSessions] = useState([]);
@@ -122,14 +121,7 @@ export default function AiPage() {
     setQuerying(true);
 
     try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/ai/agent-query`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: agentId, prompt }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.post("/api/ai/agent-query", { agent_id: agentId, prompt });
       patchActive((s) => ({
         ...s,
         messages: [...s.messages, { role: "assistant", text: data.response || "(empty response)", steps: data.steps || [] }],
@@ -156,15 +148,12 @@ export default function AiPage() {
   const [graphNodes, setGraphNodes] = useState([]);
   const fetchGraph = useCallback(async () => {
     try {
-      const token = await getToken();
-      const res = await fetch(`${API_BASE_URL}/api/ai/trust-graph`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error("Fetch failed");
-      const data = await res.json();
+      const data = await api.get("/api/ai/trust-graph");
       setGraphNodes(Array.isArray(data.nodes) ? data.nodes : []);
     } catch {
       setGraphNodes([]);
     }
-  }, [getToken]);
+  }, [api]);
   useEffect(() => { fetchGraph(); }, [fetchGraph]);
 
   const nodeColor = (status, type) => {

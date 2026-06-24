@@ -1,121 +1,111 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useEffect, useState, useCallback } from "react";
 import { CheckCircle, CircleDashed, FileText, ShieldCheck, Database, Plug, AlertTriangle } from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { useApi } from "../lib/api";
+import { PageContainer, PageHeader, Card, CardHeader, StatCard, Skeleton, EmptyState, ProgressBar } from "../components/ui";
 
 export default function ImplementationPage() {
-  const { getToken } = useAuth();
+  const api = useApi();
   const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      setReport(await api.get("/api/evaluation/report"));
+    } catch {
+      setReport(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [api]);
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken();
-        const res = await fetch(`${API_BASE_URL}/api/evaluation/report`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        setReport(await res.json());
-      } catch (err) {
-        setReport(null);
-      }
-    };
     load();
-  }, []);
+  }, [load]);
 
   const objectives = report?.objectives || [];
+  const integrations = report?.integrations || [];
 
   return (
-    <div className="p-8 space-y-8 max-w-7xl mx-auto w-full">
-      <div>
-        <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">PDF Implementation Closure</span>
-        <h2 className="text-2xl font-semibold text-zinc-100 tracking-tight mt-0.5">Final Project Report</h2>
-        <p className="text-zinc-400 text-xs mt-0.5 max-w-2xl">
-          A practical implementation-readiness view showing how the app maps to the report aim: banking GRC automation with LLMs, explainability, BYOK, and live system evidence.
-        </p>
-      </div>
+    <PageContainer>
+      <PageHeader
+        eyebrow="PDF Implementation Closure"
+        title="Final Project Report"
+        description="Implementation-readiness view mapping the app to the report aim: banking GRC automation with LLMs, explainability, BYOK, and live system evidence."
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <SummaryCard icon={ShieldCheck} label="Completion" value={`${report?.overall_completion ?? 0}%`} sub={report?.implementation_level || "Loading"} />
-        <SummaryCard icon={Database} label="Controls" value={String(report?.controls_count ?? 0)} sub={`${report?.risks_count ?? 0} risks mapped`} />
-        <SummaryCard icon={CircleDashed} label="Departments" value={String(report?.departments?.length ?? 0)} sub={(report?.departments || []).join(", ")} />
-        <SummaryCard icon={Plug} label="Connectors" value={String(report?.integrations?.length ?? 0)} sub="AWS, GitHub, Okta, Auth0, Jamf, Workday" />
+        {loading ? (
+          Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)
+        ) : (
+          <>
+            <StatCard label="Completion" value={`${report?.overall_completion ?? 0}%`} icon={ShieldCheck} footer={report?.implementation_level || "—"} accent={(report?.overall_completion ?? 0) >= 70 ? "success" : "warning"} />
+            <StatCard label="Controls" value={report?.controls_count ?? 0} icon={Database} footer={`${report?.risks_count ?? 0} risks mapped`} />
+            <StatCard label="Departments" value={report?.departments?.length ?? 0} icon={CircleDashed} footer={(report?.departments || []).join(", ") || "None"} />
+            <StatCard label="Connectors" value={integrations.length} icon={Plug} footer={integrations.length ? integrations.slice(0, 6).join(", ") : "None connected"} />
+          </>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-[#121215] border border-zinc-800/80 rounded-xl p-5 space-y-5">
-          <div>
-            <h3 className="text-sm font-semibold text-zinc-100">Objective Coverage</h3>
-            <p className="text-[10px] text-zinc-500 mt-1">Mapped from the PDF aim and objectives.</p>
-          </div>
-          {objectives.map((item) => (
-            <div key={item.name} className="border border-zinc-850 rounded-lg p-4 bg-zinc-950/30">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle size={14} className={item.coverage >= 70 ? "text-emerald-400" : "text-amber-400"} />
-                    <h4 className="text-xs font-semibold text-zinc-100">{item.name}</h4>
+        <Card className="lg:col-span-2 space-y-4">
+          <CardHeader title="Objective Coverage" description="Mapped from the PDF aim and objectives." />
+          {loading ? (
+            <div className="space-y-4">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)}</div>
+          ) : objectives.length === 0 ? (
+            <EmptyState icon={FileText} title="Report unavailable" description="The implementation report could not be loaded." />
+          ) : (
+            objectives.map((item) => (
+              <div key={item.name} className="border border-zinc-800 rounded-lg p-4 bg-zinc-950/30">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <CheckCircle size={14} className={item.coverage >= 70 ? "text-emerald-400" : "text-amber-400"} />
+                      <h4 className="text-sm font-semibold text-zinc-100">{item.name}</h4>
+                    </div>
+                    <p className="text-xs text-zinc-500 mt-1">{item.status}</p>
                   </div>
-                  <p className="text-[10px] text-zinc-500 mt-1">{item.status}</p>
+                  <span className="text-sm font-semibold text-zinc-200 tabular-nums">{item.coverage}%</span>
                 </div>
-                <span className="text-xs font-semibold text-zinc-200">{item.coverage}%</span>
+                <ProgressBar value={item.coverage} tone={item.coverage >= 70 ? "success" : "warning"} className="mt-3" />
+                <p className="text-xs text-zinc-400 mt-3 leading-relaxed">{item.evidence}</p>
               </div>
-              <div className="h-1.5 bg-zinc-900 rounded-full overflow-hidden mt-3">
-                <div className="h-full bg-zinc-100" style={{ width: `${item.coverage}%` }} />
-              </div>
-              <p className="text-[11px] text-zinc-400 mt-3 leading-relaxed">{item.evidence}</p>
-            </div>
-          ))}
-        </div>
+            ))
+          )}
+        </Card>
 
         <div className="space-y-6">
-          <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5">
+          <Card>
             <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <AlertTriangle size={15} className="text-amber-400" />
-              Remaining Gaps
+              <AlertTriangle size={15} className="text-amber-400" /> Remaining Gaps
             </h3>
             <div className="space-y-3 mt-4">
-              {(report?.remaining_gaps || []).map((gap) => (
-                <div key={gap} className="text-[11px] text-zinc-400 leading-relaxed border-b border-zinc-850 pb-3 last:border-0 last:pb-0">
-                  {gap}
-                </div>
-              ))}
+              {(report?.remaining_gaps || []).length === 0 ? (
+                <p className="text-xs text-zinc-500">No gaps reported.</p>
+              ) : (
+                (report?.remaining_gaps || []).map((gap) => (
+                  <div key={gap} className="text-xs text-zinc-400 leading-relaxed border-b border-zinc-800 pb-3 last:border-0 last:pb-0">{gap}</div>
+                ))
+              )}
             </div>
-          </div>
+          </Card>
 
-          <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5">
+          <Card>
             <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <FileText size={15} className="text-zinc-400" />
-              Demo Script
+              <FileText size={15} className="text-zinc-400" /> Demo Script
             </h3>
             <div className="space-y-3 mt-4">
               {(report?.demo_script || []).map((step, index) => (
-                <div key={step} className="flex gap-3 text-[11px] text-zinc-400 leading-relaxed">
-                  <span className="w-5 h-5 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center text-[10px] shrink-0">
-                    {index + 1}
-                  </span>
+                <div key={step} className="flex gap-3 text-xs text-zinc-400 leading-relaxed">
+                  <span className="w-5 h-5 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center text-xs shrink-0">{index + 1}</span>
                   <span>{step}</span>
                 </div>
               ))}
             </div>
-          </div>
+          </Card>
         </div>
       </div>
-    </div>
-  );
-}
-
-function SummaryCard({ icon: Icon, label, value, sub }) {
-  return (
-    <div className="bg-[#121215] border border-zinc-800/80 rounded-xl p-5 min-h-[124px]">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">{label}</span>
-        <Icon size={16} className="text-zinc-500" />
-      </div>
-      <div className="text-2xl font-semibold text-zinc-100 mt-3">{value}</div>
-      <div className="text-[10px] text-zinc-500 mt-2 line-clamp-2">{sub}</div>
-    </div>
+    </PageContainer>
   );
 }
