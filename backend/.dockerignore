@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+*.db
+_demo_db_backup/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+uploads/
+temp_uploads/
+*.log
+*_stdout.txt
+*_stderr.txt

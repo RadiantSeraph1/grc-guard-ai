@@ -13,6 +13,19 @@ client = TestClient(app)
 AUTH_HEADERS = {"Authorization": "Bearer mock-admin-token"}
 SUPER_ADMIN_HEADERS = {"Authorization": "Bearer mock-super-admin-token"}
 
+
+def _force_rule_engine():
+    """Deactivate all AI providers so scan tests use the deterministic keyword
+    rule engine (no LLM), keeping the category assertion stable. With no usable
+    provider, the scanner does not call the gateway at all."""
+    import database, models
+    db = database.SessionLocal()
+    try:
+        db.query(models.AIProviderConfig).update({"is_active": False})
+        db.commit()
+    finally:
+        db.close()
+
 def test_health():
     print("Testing /api/health endpoint...")
     response = client.get("/api/health")
@@ -49,6 +62,7 @@ def test_super_admin_access_control():
 
 def test_scan_unencrypted():
     print("Testing /api/scan endpoint (Unencrypted)...")
+    _force_rule_engine()  # deterministic rule path for a stable category assertion
     payload = {
         "text": "Gateway impersonation on SWIFT gateway detected by routing system.",
         "perspective": "Attacker",
@@ -67,6 +81,7 @@ def test_scan_unencrypted():
 
 def test_scan_encrypted_byok():
     print("Testing /api/scan endpoint with BYOK Encryption & Decryption...")
+    _force_rule_engine()  # deterministic rule path
     payload = {
         "text": "CET1 ratio of 5.5% detected on active ledger accounts.",
         "perspective": "Standard",
@@ -120,57 +135,9 @@ def test_rag_corpus_and_analysis():
     assert "metrics" in data
     assert "recommended_actions" in data
     assert "citations" in data
-    # The platform ships with no demo data, so a fresh org has zero controls.
+    # The platform ships with no seeded data, so a fresh org has zero controls.
     assert data["metrics"]["controls"] >= 0
     print("SUCCESS: RAG corpus and analysis endpoints verified.")
-    print()
-
-def test_tpm_attestation_flow():
-    print("Testing TPM Challenge-Response flow...")
-    # Get challenge
-    response_challenge = client.get("/api/attest/challenge")
-    assert response_challenge.status_code == 200
-    challenge = response_challenge.json()
-    nonce = challenge["nonce"]
-    print(f"Retrieved Challenge Nonce: {nonce}")
-
-    # Generate a quote (simulated)
-    # Using SHA256 simulation matching our security.py logic
-    import hashlib
-    pcr_concat = "a8f3b2c1d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2" + \
-                 "b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4" + \
-                 "f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6"
-    
-    pcr_digest_input = pcr_concat + nonce
-    expected_digest = hashlib.sha256(pcr_digest_input.encode('utf-8')).hexdigest()
-    
-    signature_input = expected_digest + "attestation_key_secret"
-    expected_sig = hashlib.sha256(signature_input.encode('utf-8')).hexdigest()
-
-    tpm_quote = {
-        "quote_format": "TPM2_QUOTE",
-        "timestamp": 1234567,
-        "nonce": nonce,
-        "pcrs": {
-            "PCR0": "a8f3b2c1d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2",
-            "PCR4": "b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4",
-            "PCR8": "f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6"
-        },
-        "pcr_digest": expected_digest,
-        "attestation_key_pub": "MIIBIjANBgkqhkiG9w0BAQEFA...",
-        "signature": expected_sig
-    }
-
-    # Verify quote
-    verify_payload = {
-        "nonce": nonce,
-        "quote": tpm_quote
-    }
-    response_verify = client.post("/api/attest/verify", json=verify_payload)
-    assert response_verify.status_code == 200
-    verify_data = response_verify.json()
-    assert verify_data["verified"] is True
-    print("SUCCESS: TPM Challenge-Response verification verified.")
     print()
 
 if __name__ == "__main__":
@@ -179,5 +146,4 @@ if __name__ == "__main__":
     test_scan_unencrypted()
     test_scan_encrypted_byok()
     test_rag_corpus_and_analysis()
-    test_tpm_attestation_flow()
     print("ALL API INTEGRATION TESTS PASSED SUCCESSFULLY!")

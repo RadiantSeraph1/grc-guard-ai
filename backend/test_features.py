@@ -200,8 +200,8 @@ def test_ai_providers_reports_keys():
     res = client.get("/api/settings/ai-providers", headers=AUTH)
     assert res.status_code == 200
     providers = {p["id"]: p for p in res.json()}
-    # local engines never need a key -> always usable
-    assert providers["local_evidence"]["has_key"] is True
+    # The in-house model is self-hosted and needs no key -> always usable.
+    assert providers["inhouse"]["has_key"] is True
     # has_key reflects env OR db; mirrors gateway resolution for groq
     groq_env = bool(ai_gateway.get_env_provider_key("groq"))
     if groq_env:

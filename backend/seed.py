@@ -1,6 +1,6 @@
 """Organization bootstrap.
 
-This project ships with NO demo/sample business data. When an organization is
+This project ships with NO seeded business data. When an organization is
 first provisioned we create only the empty Organization record plus the
 configuration scaffolding the app needs to be usable:
 
@@ -40,14 +40,11 @@ def run_light_migrations():
 DEFAULT_COMPANY_ID = "bank_enterprise"
 DEFAULT_COMPANY_NAME = "Your Organization"
 
-# AI provider catalog. The active provider defaults to Anthropic Claude when an
-# ANTHROPIC_API_KEY is present, otherwise the local evidence engine keeps the app
-# running without any external LLM calls (resolved at request time in ai_gateway).
-AI_PROVIDER_CATALOG = [
-    "claude", "gemini", "openai", "groq", "openrouter", "mistral", "deepseek",
-    "perplexity", "xai", "azure_openai", "ollama", "local", "vast_ai", "custom",
-    "local_evidence",
-]
+# AI provider catalog: the in-house trained GRC model and Groq (interim, for
+# testing). The active provider is resolved at request time in ai_gateway (Groq is
+# auto-activated while a GROQ_API_KEY is present). When neither is usable, AI
+# features return an explicit "no model available" notice.
+AI_PROVIDER_CATALOG = ["inhouse", "groq"]
 
 
 def ensure_ai_providers(db: Session, org_id: str):
@@ -57,7 +54,7 @@ def ensure_ai_providers(db: Session, org_id: str):
             db.add(AIProviderConfig(
                 id=provider_id,
                 org_id=org_id,
-                is_active=(provider_id == "local_evidence"),
+                is_active=False,
             ))
     db.commit()
 

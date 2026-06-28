@@ -13,20 +13,20 @@ import {
 // Per-connector presentation + credential hints. Connectors themselves come from
 // the backend catalog (/api/integrations); this only drives icons/help text.
 const CONNECTOR_META = {
-  aws: { emoji: "☁️", desc: "Audits S3 bucket encryption and storage security configuration.", label: "AWS Access Credentials", ph: '{"aws_access_key_id":"...","aws_secret_access_key":"...","bucket_name":"..."}' },
-  gcp: { emoji: "🌥️", desc: "Audits GCS bucket encryption and public-access prevention.", label: "GCP Service Account JSON", ph: '{"service_account_json":"{...}","bucket_name":"my-bucket","project_id":"my-proj"}' },
-  azure: { emoji: "🟦", desc: "Audits Storage Account secure-transfer and encryption settings.", label: "Azure Service Principal", ph: '{"tenant_id":"...","client_id":"...","client_secret":"...","subscription_id":"...","resource_group":"...","account_name":"..."}' },
-  okta: { emoji: "🔑", desc: "Retrieves user rosters and verifies MFA factor enrollment.", label: "Okta API Token / Org URL", ph: '{"org_url":"https://dev-xxxxx.okta.com","token":"..."}' },
-  auth0: { emoji: "🛡️", desc: "Audits directory users, MFA Guardian enrollment, login logs, and roles.", label: "Auth0 M2M Credentials", ph: '{"domain":"your-tenant.us.auth0.com","client_id":"...","client_secret":"..."}' },
-  entra: { emoji: "🟦", desc: "Audits Entra ID users and MFA via Microsoft Graph.", label: "Entra (Graph) App Registration", ph: '{"tenant_id":"...","client_id":"...","client_secret":"..."}' },
-  google_workspace: { emoji: "🅖", desc: "Audits Workspace users and 2-Step Verification enrollment.", label: "Workspace Service Account", ph: '{"service_account_json":"{...}","admin_email":"admin@yourco.com"}' },
-  github: { emoji: "💻", desc: "Evaluates branch protection and pull request review rules.", label: "GitHub Personal Access Token", ph: '{"token":"ghp_...","owner":"your-org","repo":"your-repo","branch":"main"}' },
-  snyk: { emoji: "🐶", desc: "Audits open critical/high vulnerabilities across monitored projects.", label: "Snyk API Token + Org", ph: '{"token":"...","org_id":"..."}' },
-  crowdstrike: { emoji: "🦅", desc: "Audits endpoint sensor coverage and detection posture.", label: "CrowdStrike API Client", ph: '{"client_id":"...","client_secret":"...","base_url":"https://api.crowdstrike.com"}' },
-  jamf: { emoji: "📱", desc: "Validates managed Mac enrollment and FileVault disk encryption.", label: "Jamf Pro API Client", ph: '{"base_url":"https://yourorg.jamfcloud.com","client_id":"...","client_secret":"..."}' },
-  workday: { emoji: "👥", desc: "Syncs active worker roster via a RaaS report endpoint.", label: "Workday RaaS Report", ph: '{"report_url":"https://...","username":"ISU","password":"..."}' },
+  aws: { desc: "Audits S3 bucket encryption and storage security configuration.", label: "AWS Access Credentials", ph: '{"aws_access_key_id":"...","aws_secret_access_key":"...","bucket_name":"..."}' },
+  gcp: { desc: "Audits GCS bucket encryption and public-access prevention.", label: "GCP Service Account JSON", ph: '{"service_account_json":"{...}","bucket_name":"my-bucket","project_id":"my-proj"}' },
+  azure: { desc: "Audits Storage Account secure-transfer and encryption settings.", label: "Azure Service Principal", ph: '{"tenant_id":"...","client_id":"...","client_secret":"...","subscription_id":"...","resource_group":"...","account_name":"..."}' },
+  okta: { desc: "Retrieves user rosters and verifies MFA factor enrollment.", label: "Okta API Token / Org URL", ph: '{"org_url":"https://dev-xxxxx.okta.com","token":"..."}' },
+  auth0: { desc: "Audits directory users, MFA Guardian enrollment, login logs, and roles.", label: "Auth0 M2M Credentials", ph: '{"domain":"your-tenant.us.auth0.com","client_id":"...","client_secret":"..."}' },
+  entra: { desc: "Audits Entra ID users and MFA via Microsoft Graph.", label: "Entra (Graph) App Registration", ph: '{"tenant_id":"...","client_id":"...","client_secret":"..."}' },
+  google_workspace: { desc: "Audits Workspace users and 2-Step Verification enrollment.", label: "Workspace Service Account", ph: '{"service_account_json":"{...}","admin_email":"admin@yourco.com"}' },
+  github: { desc: "Evaluates branch protection and pull request review rules.", label: "GitHub Personal Access Token", ph: '{"token":"ghp_...","owner":"your-org","repo":"your-repo","branch":"main"}' },
+  snyk: { desc: "Audits open critical/high vulnerabilities across monitored projects.", label: "Snyk API Token + Org", ph: '{"token":"...","org_id":"..."}' },
+  crowdstrike: { desc: "Audits endpoint sensor coverage and detection posture.", label: "CrowdStrike API Client", ph: '{"client_id":"...","client_secret":"...","base_url":"https://api.crowdstrike.com"}' },
+  jamf: { desc: "Validates managed Mac enrollment and FileVault disk encryption.", label: "Jamf Pro API Client", ph: '{"base_url":"https://yourorg.jamfcloud.com","client_id":"...","client_secret":"..."}' },
+  workday: { desc: "Syncs active worker roster via a RaaS report endpoint.", label: "Workday RaaS Report", ph: '{"report_url":"https://...","username":"ISU","password":"..."}' },
 };
-const metaFor = (id) => CONNECTOR_META[id] || { emoji: "🔌", desc: "Connect this system to pull live compliance evidence.", label: "API Credentials (JSON)", ph: '{"...":"..."}' };
+const metaFor = (id) => CONNECTOR_META[id] || { desc: "Connect this system to pull live compliance evidence.", label: "API Credentials (JSON)", ph: '{"...":"..."}' };
 
 const CATEGORY_ICON = {
   CLOUD: <Cloud size={14} />,
@@ -176,8 +176,8 @@ export default function IntegrationsPage() {
               <Card key={item.id} hover className="flex flex-col justify-between gap-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-11 h-11 rounded-xl bg-zinc-900 flex items-center justify-center text-xl border border-zinc-800 shrink-0">
-                      {meta.emoji}
+                    <div className="w-11 h-11 rounded-xl bg-zinc-900 flex items-center justify-center text-sm font-semibold text-zinc-300 border border-zinc-800 shrink-0">
+                      {(item.name || item.id || "?").slice(0, 2).toUpperCase()}
                     </div>
                     <div className="min-w-0">
                       <h3 className="font-semibold text-zinc-100 leading-snug truncate">{item.name}</h3>
@@ -261,7 +261,7 @@ export default function IntegrationsPage() {
                     connectionMode === mode ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
                   )}
                 >
-                  {mode === "api" ? "🔑 API Credentials" : "🌐 OAuth Web Connection"}
+                  {mode === "api" ? "API Credentials" : "OAuth Web Connection"}
                 </button>
               ))}
             </div>

@@ -26,14 +26,15 @@ export default function EvaluationPage() {
   }, [fetchBenchmark]);
 
   const cases = benchmark?.results || [];
-  const misclassTypes = new Set(cases.map((item) => item.misclassification_type)).size;
+  const cm = benchmark?.confusion_matrix || { tp: 0, tn: 0, fp: 0, fn: 0 };
+  const errors = (cm.fp || 0) + (cm.fn || 0);
 
   return (
     <PageContainer>
       <PageHeader
         eyebrow="Chapter 4 Validation"
         title="Benchmark Evaluation"
-        description="Expected-vs-actual banking compliance tests mapped to report objectives: Basel III, CBEST, GDPR, SOC 2, XAI, and BYOK/API security."
+        description="Deterministic rule baseline scored on a held-out labelled set it was NOT tuned for. The held-out vs in-distribution gap is the honest generalization headroom."
         actions={<Button icon={RotateCw} loading={loading} onClick={fetchBenchmark}>Re-run</Button>}
       />
 
@@ -42,10 +43,10 @@ export default function EvaluationPage() {
           Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)
         ) : (
           <>
-            <StatCard label="Accuracy" value={`${benchmark?.accuracy ?? 0}%`} icon={Activity} footer={`${benchmark?.passed_cases ?? 0} of ${benchmark?.total_cases ?? 0} cases passed`} accent={(benchmark?.accuracy ?? 0) >= (benchmark?.target_accuracy ?? 85) ? "success" : "warning"} />
-            <StatCard label="Target" value={`${benchmark?.target_accuracy ?? 85}%`} icon={Target} footer="Acceptance threshold" />
-            <StatCard label="Workload Reduction" value={`${benchmark?.workload_reduction_estimate ?? 0}%`} icon={Brain} footer="Report-aligned estimate" accent="accent" />
-            <StatCard label="Misclass Types" value={misclassTypes} icon={AlertTriangle} footer="Tracked failure categories" />
+            <StatCard label="Held-out Accuracy" value={`${benchmark?.accuracy ?? 0}%`} icon={Activity} footer={`${benchmark?.passed_cases ?? 0} of ${benchmark?.total_cases ?? 0} held-out cases correct`} accent={(benchmark?.accuracy ?? 0) >= 80 ? "success" : "warning"} />
+            <StatCard label="In-distribution" value={`${benchmark?.in_distribution?.decision_accuracy ?? 0}%`} icon={Target} footer={`${benchmark?.in_distribution?.total_cases ?? 0} cases the rules were tuned for`} />
+            <StatCard label="Recall / F1" value={`${benchmark?.recall ?? "–"} / ${benchmark?.f1 ?? "–"}`} icon={Brain} footer="Violation recall & F1 (held-out)" accent="accent" />
+            <StatCard label="Errors" value={errors} icon={AlertTriangle} footer={`${cm.fp || 0} false positive · ${cm.fn || 0} missed`} accent={errors > 0 ? "warning" : "success"} />
           </>
         )}
       </div>
@@ -69,7 +70,7 @@ export default function EvaluationPage() {
                   <th className="px-4 py-3 font-semibold">Case</th>
                   <th className="px-4 py-3 font-semibold">Expected</th>
                   <th className="px-4 py-3 font-semibold">Actual</th>
-                  <th className="px-4 py-3 font-semibold">Misclassification Guard</th>
+                  <th className="px-4 py-3 font-semibold">XAI Top Terms</th>
                   <th className="px-4 py-3 font-semibold">Result</th>
                 </tr>
               </thead>
@@ -79,7 +80,6 @@ export default function EvaluationPage() {
                     <td className="px-4 py-4 min-w-[260px]">
                       <div className="font-semibold text-zinc-200">{item.framework}</div>
                       <div className="text-zinc-500 mt-1 leading-relaxed text-xs">{item.text}</div>
-                      <div className="text-xs text-zinc-600 mt-2">Objective: {item.objective}</div>
                     </td>
                     <td className="px-4 py-4 text-zinc-300">
                       <div>{item.expected_decision}</div>
@@ -91,8 +91,7 @@ export default function EvaluationPage() {
                       <div className="text-xs text-zinc-600 mt-2">Confidence: {Math.round((item.confidence || 0) * 100)}%</div>
                     </td>
                     <td className="px-4 py-4 text-zinc-400 max-w-[260px]">
-                      <div className="text-xs">{item.misclassification_type}</div>
-                      <div className="flex flex-wrap gap-1 mt-2">
+                      <div className="flex flex-wrap gap-1">
                         {(item.top_terms || []).slice(0, 5).map((term, idx) => (
                           <span key={idx} className="bg-zinc-900 border border-zinc-800 rounded px-1.5 py-0.5 text-xs text-zinc-400">{term.word}</span>
                         ))}

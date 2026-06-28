@@ -1,7 +1,7 @@
 """GRC agents built on the agno framework.
 
 These are real agno `Agent` objects. Each agent is given:
-  * the active organization's model (Claude by default, resolved via ai_gateway)
+  * the active organization's model (Groq for now / the in-house model, via ai_gateway)
   * GRC-specific instructions
   * tools to read the live platform state (RAG corpus + control/risk graph)
 
@@ -158,20 +158,28 @@ AGENT_DEFINITIONS = [
 ]
 
 
-def _default_claude_model():
-    """Always-constructable Claude model (default provider) for agent serving."""
-    from agno.models.anthropic import Claude
-    return Claude(
-        id=ai_gateway.PROVIDER_DEFAULT_MODEL["claude"],
-        api_key=ai_gateway.get_env_provider_key("claude"),
+def _default_model():
+    """Interim fallback model for agent serving (Groq until the in-house model is
+    trained). Returns None when no usable provider is configured; callers then
+    degrade to the grounded gateway fallback rather than erroring.
+    """
+    key = ai_gateway.get_env_provider_key("groq")
+    if not key:
+        return None
+    from agno.models.openai.like import OpenAILike
+    return OpenAILike(
+        id=ai_gateway.PROVIDER_DEFAULT_MODEL["groq"],
+        api_key=key,
+        base_url=ai_gateway.OPENAI_COMPATIBLE_BASE_URL["groq"],
     )
 
 
 def _model_for_org(org_id: Optional[str]):
-    """Build the agno model for the org's active provider (Claude default).
+    """Build the agno model for the org's active provider.
 
-    Never returns None: if the active provider is the local engine or cannot be
-    constructed, fall back to a Claude model so agents are always serveable.
+    Falls back to the interim default model (Groq) when the active provider is the
+    local engine or cannot be constructed. May return None if nothing is usable —
+    callers handle that by degrading to the grounded gateway fallback.
     """
     try:
         db = database.SessionLocal()
@@ -184,8 +192,8 @@ def _model_for_org(org_id: Optional[str]):
         finally:
             db.close()
     except Exception as e:
-        print(f"Falling back to default Claude model for agents: {e}")
-    return _default_claude_model()
+        print(f"Falling back to interim default model for agents: {e}")
+    return _default_model()
 
 
 def build_grc_agents(org_id: str = DEFAULT_COMPANY_ID) -> List[Agent]:

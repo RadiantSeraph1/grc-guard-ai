@@ -37,11 +37,10 @@ SUPER_ADMIN_ACCESS_KEY = os.environ.get("SUPER_ADMIN_ACCESS_KEY", "local-super-a
 SUPER_ADMIN_SESSION_SECRET = os.environ.get("SUPER_ADMIN_SESSION_SECRET", ai_gateway.get_vault_key() or "local-super-admin-session-secret")
 CLERK_SECRET_KEY = os.environ.get("CLERK_SECRET_KEY")
 CLERK_BACKEND_API_URL = os.environ.get("CLERK_BACKEND_API_URL", "https://api.clerk.com/v1")
-AI_PROVIDER_IDS = [
-    "local_evidence", "gemini", "openai", "claude", "groq", "openrouter",
-    "mistral", "deepseek", "perplexity", "xai", "azure_openai",
-    "ollama", "local", "vast_ai", "custom"
-]
+# Supported AI providers: Groq (interim, for testing) and "inhouse" (our own
+# trained GRC model). When neither is usable, AI features return an explicit
+# "no model available" notice — there is no fabricated fallback engine.
+AI_PROVIDER_IDS = ["groq", "inhouse"]
 
 app = FastAPI(title="GRC Guard AI Enterprise Compliance Engine API")
 
@@ -64,8 +63,15 @@ models.Base.metadata.create_all(bind=database.engine)
 # SQLite Database for Backward-Compatible Audit Logs
 AUDIT_DB = "grc_audit_logs.db"
 
+def _audit_connect():
+    """Open the audit-log SQLite DB with WAL + a busy timeout (C4)."""
+    conn = sqlite3.connect(AUDIT_DB, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    return conn
+
 def init_audit_db():
-    conn = sqlite3.connect(AUDIT_DB)
+    conn = _audit_connect()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS audit_logs (
@@ -415,7 +421,7 @@ def on_startup():
 @app.get("/api/health")
 def health_check(db: Session = Depends(database.get_db)):
     active_ai = ai_gateway.get_active_provider_config(db, DEFAULT_COMPANY_ID)
-    active_id = active_ai.id if active_ai else "local_evidence"
+    active_id = active_ai.id if active_ai else "none"
     provider_env_key = ai_gateway.get_env_provider_key(active_id)
     provider_db_key = ai_gateway.get_decrypted_key(active_ai) if active_ai else None
     return {
@@ -529,7 +535,7 @@ def super_admin_overview(db: Session = Depends(database.get_db), current_user = 
             "clerk_secret_configured": bool(get_clerk_secret_key()),
             "byok_configured": bool(ai_gateway.get_vault_key()),
             "allowed_origins": get_allowed_origins(),
-            "active_ai_provider": active_ai_provider.id if active_ai_provider else "local_evidence"
+            "active_ai_provider": active_ai_provider.id if active_ai_provider else "none"
         },
         "departments": department_rows,
         "users": [
@@ -574,7 +580,7 @@ def ensure_ai_provider_configs(db: Session, org_id: str) -> list[models.AIProvid
     has_active = any(config.is_active for config in configs)
     for provider_id in AI_PROVIDER_IDS:
         if provider_id not in existing_ids:
-            db.add(models.AIProviderConfig(id=provider_id, org_id=org_id, is_active=(provider_id == "local_evidence" and not has_active)))
+            db.add(models.AIProviderConfig(id=provider_id, org_id=org_id, is_active=False))
     db.commit()
     configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
     active = next((config for config in configs if config.is_active), None)
@@ -582,7 +588,7 @@ def ensure_ai_provider_configs(db: Session, org_id: str) -> list[models.AIProvid
     if (
         os.environ.get("GROQ_API_KEY", "").strip()
         and groq
-        and (not active or active.id == "local_evidence")
+        and not active
         and not groq.is_active
     ):
         for config in configs:
@@ -803,7 +809,7 @@ def super_admin_update_ai_provider(id: str, request: SuperAdminAIProviderUpdateR
     if request.api_key is not None and request.api_key.strip():
         provider.api_key = security.encrypt_log(request.api_key, get_required_vault_key())
     if request.activate:
-        if id not in ["local_evidence", "ollama", "local"] and not provider.api_key:
+        if id not in ["inhouse"] and not provider.api_key:
             raise HTTPException(status_code=400, detail=f"Configure an API key before activating {id}.")
         for item in db.query(models.AIProviderConfig).filter_by(org_id=org_id).all():
             item.is_active = (item.id == id)
@@ -1106,6 +1112,24 @@ def build_scan_reasoning_trace(
         }
     ]
 
+def normalize_scan_decision(raw) -> Optional[str]:
+    """Map a model's free-text decision onto the canonical {COMPLIANT, VIOLATION}.
+
+    Returns None when the value is missing or unrecognized, so the caller keeps
+    the deterministic rule-based verdict instead of trusting garbage output.
+    """
+    if not raw:
+        return None
+    value = str(raw).strip().upper()
+    violation = {"VIOLATION", "NON-COMPLIANT", "NONCOMPLIANT", "FAIL", "FAILED", "BREACH", "NON COMPLIANT"}
+    compliant = {"COMPLIANT", "PASS", "PASSED", "OK", "COMPLIANT."}
+    if value in violation:
+        return "VIOLATION"
+    if value in compliant:
+        return "COMPLIANT"
+    return None
+
+
 @app.post("/api/scan")
 def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
     """
@@ -1123,48 +1147,69 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
     category = evaluation["category"]
     raw_explanation = evaluation["justification"]["reasoning"].split("\n\n", 1)[0]
 
-    # If active provider is configured and NOT local evidence, query the AI gateway
+    # If an active provider is configured AND usable, query the AI gateway and let
+    # the model decide. When no model is usable, the deterministic keyword rule
+    # result (computed above) stands on its own — there is no fabricated fallback.
     active_config = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
-    provider_id = active_config.id if active_config else "local_evidence"
+    provider_usable = bool(
+        active_config
+        and ai_gateway._provider_usable(active_config.id, ai_gateway.get_decrypted_key(active_config))
+    )
+    provider_id = active_config.id if provider_usable else "rule_engine"
     provider_status = "completed"
-    if active_config and active_config.id != "local_evidence":
+    if provider_usable:
         try:
             prompt = f"""
             You are a senior banking GRC (Governance, Risk, and Compliance) auditor.
-            Evaluate the following audit scenario against the provided regulatory context.
-            
+            You are the deciding authority for this scan. Evaluate the audit scenario
+            against the provided regulatory context and reach your OWN verdict.
+
+            A lightweight keyword heuristic produced a preliminary guess of
+            '{decision}' under '{category}'. Treat it only as a hint — confirm,
+            refine, or overturn it based on the actual scenario and context.
+
             Perspective-aware Evaluation Directive:
             We are evaluating from the '{request.perspective}' perspective.
-            - If evaluating from 'Attacker' perspective, classify deception-based items (like gateway impersonation) strictly under threat boundaries (Spoofing).
-            - If evaluating from 'User' or 'Auditor' perspective, classify details exposing data as Information Disclosure.
-            
+            - From the 'Attacker' perspective, classify deception-based items (like gateway impersonation) under threat boundaries (Spoofing).
+            - From the 'User' or 'Auditor' perspective, classify details exposing data as Information Disclosure.
+
             Regulatory Reference Context:
             {matched_context if matched_context else "No specific regulatory matching chunk found in index."}
-            
+
             Audit Scenario to Scan:
             "{request.text}"
+
+            Respond with:
+            - decision: exactly "COMPLIANT" or "VIOLATION".
+            - category: the most relevant framework/control area (e.g. "Basel III Capital Adequacy", "GDPR Data Protection", "SOC 2 Access Control").
+            - explanation: a grounded, auditor-ready rationale citing the context where possible.
             """
-            
+
             schema = {
                 "type": "object",
                 "properties": {
-                    "decision": {"type": "string"},
+                    "decision": {"type": "string", "enum": ["COMPLIANT", "VIOLATION"]},
                     "category": {"type": "string"},
                     "explanation": {"type": "string"}
                 },
                 "required": ["decision", "category", "explanation"]
             }
-            
-            # Temporary set config active in singleton context
+
             res_data = ai_gateway.generate_structured_json(prompt, schema, "You are a senior banking GRC compliance auditor.", org_id=org_id)
-            ai_decision = str(res_data.get("decision", "")).strip().upper()
-            if ai_decision == decision:
+            ai_decision = normalize_scan_decision(res_data.get("decision"))
+            if ai_decision:
+                # The LLM is authoritative when a real provider is configured; the
+                # keyword rule is only the offline fallback (it no longer has to
+                # merely "agree" before the model's verdict can be used).
                 decision = ai_decision
-            raw_explanation = res_data.get("explanation", raw_explanation)
+                ai_category = str(res_data.get("category", "")).strip()
+                if ai_category:
+                    category = ai_category
+            raw_explanation = (res_data.get("explanation") or "").strip() or raw_explanation
         except Exception as e:
             provider_status = "fallback"
-            provider_id = "local_evidence"
-            print(f"Rerouting to local heuristics due to AI client error: {str(e)}")
+            provider_id = "rule_engine"
+            print(f"Rerouting to deterministic rule engine due to AI client error: {str(e)}")
 
     # 3. Rebuild local XAI after optional AI-provider override.
     attributions = xai.calculate_local_attribution(request.text, matched_regs)
@@ -1203,7 +1248,7 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
         import hashlib
         byok_hash = hashlib.sha256(request.byok_key.encode('utf-8')).hexdigest()
         
-    conn = sqlite3.connect(AUDIT_DB)
+    conn = _audit_connect()
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1245,7 +1290,7 @@ def compute_scan_confidence(attributions: list, matched_regs: list) -> float:
 def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
     """Retrieve audit logs. If a valid BYOK key is provided, encrypted fields are decrypted."""
     org_id = current_user.org_id
-    conn = sqlite3.connect(AUDIT_DB)
+    conn = _audit_connect()
     cursor = conn.cursor()
     cursor.execute("SELECT id, timestamp, scanned_text, decision, category, explanation, is_encrypted, byok_key_hash FROM audit_logs WHERE org_id = ? ORDER BY timestamp DESC", (org_id,))
     rows = cursor.fetchall()
@@ -1357,37 +1402,115 @@ BENCHMARK_CASES = [
     }
 ]
 
-@app.get("/api/evaluation/benchmark")
-def run_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+HOLDOUT_PATH = os.path.join(os.path.dirname(__file__), "benchmark", "holdout_cases.jsonl")
+
+
+def load_holdout_cases() -> list:
+    """Load the held-out, labelled benchmark set (scenarios the keyword rules were
+    NOT authored for). Missing/blank file -> empty list."""
+    cases = []
+    try:
+        with open(HOLDOUT_PATH, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    cases.append(json.loads(line))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"Failed to load held-out benchmark cases: {e}")
+    return cases
+
+
+def _evaluate_case_set(cases: list, org_id: str, db: Session) -> tuple:
+    """Run the deterministic scan engine over a labelled case set and return
+    (per-case results, real metrics). Positive class for the confusion matrix is
+    VIOLATION. Per-case confidence is the engine's real signal score, not a
+    constant."""
     results = []
-    for case in BENCHMARK_CASES:
-        evaluation = evaluate_scan_case(case["text"], case["perspective"], current_user.org_id, db)
-        decision_match = evaluation["decision"] == case["expected_decision"]
-        category_match = evaluation["category"] == case["expected_category"]
-        passed = decision_match and category_match
-        confidence = 0.92 if passed else 0.58
+    tp = tn = fp = fn = 0
+    decision_hits = category_hits = 0
+    for case in cases:
+        ev = evaluate_scan_case(case["text"], case.get("perspective", "Standard"), org_id, db)
+        actual, expected = ev["decision"], case["expected_decision"]
+        decision_match = actual == expected
+        category_match = ev["category"] == case.get("expected_category")
+        decision_hits += int(decision_match)
+        category_hits += int(category_match)
+        if expected == "VIOLATION" and actual == "VIOLATION":
+            tp += 1
+        elif expected == "COMPLIANT" and actual == "COMPLIANT":
+            tn += 1
+        elif expected == "COMPLIANT" and actual == "VIOLATION":
+            fp += 1
+        elif expected == "VIOLATION" and actual == "COMPLIANT":
+            fn += 1
         results.append({
             **case,
-            "actual_decision": evaluation["decision"],
-            "actual_category": evaluation["category"],
-            "passed": passed,
-            "confidence": confidence,
-            "top_terms": evaluation["top_terms"],
-            "auditor_reasoning": evaluation["justification"]["reasoning"],
-            "evidence_reference": evaluation["matched_references"][0] if evaluation["matched_references"] else None
+            "actual_decision": actual,
+            "actual_category": ev["category"],
+            "decision_match": decision_match,
+            "category_match": category_match,
+            "passed": decision_match,  # decision is the primary metric
+            "confidence": compute_scan_confidence(ev["attributions"], ev["matched_references"]),
+            "top_terms": ev["top_terms"],
+            "auditor_reasoning": ev["justification"]["reasoning"],
+            "evidence_reference": ev["matched_references"][0] if ev["matched_references"] else None,
         })
+    n = len(cases)
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    f1 = (2 * precision * recall / (precision + recall)) if (precision and recall) else None
+    metrics = {
+        "total_cases": n,
+        "decision_accuracy": round(decision_hits / n * 100, 1) if n else 0,
+        "category_accuracy": round(category_hits / n * 100, 1) if n else 0,
+        "confusion_matrix": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
+        "precision": round(precision, 3) if precision is not None else None,
+        "recall": round(recall, 3) if recall is not None else None,
+        "f1": round(f1, 3) if f1 is not None else None,
+    }
+    return results, metrics
 
-    passed_count = sum(1 for result in results if result["passed"])
-    accuracy = round((passed_count / len(results)) * 100, 1) if results else 0
+
+@app.get("/api/evaluation/benchmark")
+def run_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Honest benchmark: the deterministic rule baseline is scored on a HELD-OUT
+    labelled set it was not tuned for. The original in-distribution cases are
+    reported separately for contrast — the gap between them is the real
+    generalization headroom (which the LLM-authoritative scan path is meant to
+    close). No fabricated target/workload constants."""
+    holdout = load_holdout_cases()
+    holdout_results, holdout_metrics = _evaluate_case_set(holdout, current_user.org_id, db)
+    _, tuned_metrics = _evaluate_case_set(BENCHMARK_CASES, current_user.org_id, db)
+
+    cm = holdout_metrics["confusion_matrix"]
     return {
         "company": DEFAULT_COMPANY_NAME,
-        "total_cases": len(results),
-        "passed_cases": passed_count,
-        "accuracy": accuracy,
-        "target_accuracy": 85,
-        "workload_reduction_estimate": 68,
-        "summary": "Benchmark maps the report objectives to deterministic banking compliance scenarios for demo validation.",
-        "results": results
+        "method": ("Deterministic rule baseline evaluated on a held-out labelled set the rules were NOT "
+                   "authored for. Primary metric = decision accuracy; positive class = VIOLATION."),
+        # Headline = held-out decision accuracy (kept under the original keys for the UI).
+        "accuracy": holdout_metrics["decision_accuracy"],
+        "passed_cases": cm["tp"] + cm["tn"],
+        "total_cases": holdout_metrics["total_cases"],
+        "category_accuracy": holdout_metrics["category_accuracy"],
+        "precision": holdout_metrics["precision"],
+        "recall": holdout_metrics["recall"],
+        "f1": holdout_metrics["f1"],
+        "confusion_matrix": cm,
+        "in_distribution": {
+            "decision_accuracy": tuned_metrics["decision_accuracy"],
+            "total_cases": tuned_metrics["total_cases"],
+            "note": "Cases the keyword rules were written for — expected near 100%; NOT a measure of generalization.",
+        },
+        "summary": (
+            f"Rule baseline: {holdout_metrics['decision_accuracy']}% decision accuracy on "
+            f"{holdout_metrics['total_cases']} held-out cases (precision "
+            f"{holdout_metrics['precision']}, recall {holdout_metrics['recall']}), vs "
+            f"{tuned_metrics['decision_accuracy']}% on the {tuned_metrics['total_cases']} in-distribution "
+            "cases it was tuned for. The gap is honest generalization headroom for the LLM scan path."
+        ),
+        "results": holdout_results,
     }
 
 @app.get("/api/evaluation/report")
@@ -1406,9 +1529,9 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
         },
         {
             "name": "Misclassification measurement and benchmarking",
-            "status": "Implemented for demo benchmark set",
+            "status": "Implemented and measured on a held-out labelled set",
             "coverage": 70,
-            "evidence": "Benchmark endpoint compares expected vs actual decisions and misclassification categories."
+            "evidence": "Benchmark endpoint reports decision accuracy, precision/recall/F1, and a confusion matrix on held-out cases."
         },
         {
             "name": "Explainable output generation",
@@ -1440,58 +1563,19 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
     return {
         "company": DEFAULT_COMPANY_NAME,
         "overall_completion": overall,
-        "implementation_level": "Project-complete demonstrable prototype",
+        "implementation_level": "Project-complete working prototype",
         "controls_count": controls_count,
         "risks_count": risks_count,
         "departments": departments,
         "integrations": [{"id": item.id, "name": item.name, "status": item.status} for item in integrations],
         "objectives": objectives,
         "remaining_gaps": [
-            "True fine-tuning/domain adaptation pipeline with annotated banking data.",
-            "Formal SHAP/LIME/Captum model explanations instead of local term attribution only.",
-            "Remote attestation / TPM-backed proof of model runtime integrity.",
-            "Expert-labeled empirical validation and Chapter 4-style result tables.",
+            "The in-house trained GRC model (currently served via the interim Groq provider).",
+            "Formal SHAP/LIME/Captum model-internal explanations (current attribution is IR-relevance based).",
+            "Expert-labelled empirical validation and Chapter 4-style result tables.",
             "Production database migrations, observability, and deployment hardening."
-        ],
-        "demo_script": [
-            "Run the benchmark page and show pass/fail accuracy.",
-            "Scan a Basel III low-CET1 case and explain the XAI attribution panel.",
-            "Connect or configure GitHub/Auth0/AWS credentials and run sync evidence.",
-            "Open the final report page to show objective-by-objective implementation coverage."
         ]
     }
-
-# TPM Attestation Challenges & Verification
-attestation_challenges = {}
-
-@app.get("/api/attest/challenge")
-def get_attestation_challenge():
-    """Generate a challenge nonce to verify the boot security state of the GRC host."""
-    nonce = str(uuid.uuid4())
-    attestation_challenges[nonce] = time.time()
-    return {"nonce": nonce}
-
-class AttestationVerifyRequest(BaseModel):
-    nonce: str
-    quote: dict
-
-@app.post("/api/attest/verify")
-def verify_attestation(request: AttestationVerifyRequest):
-    """Verify system boot integrity using a TPM2_QUOTE structure."""
-    nonce = request.nonce
-    
-    if nonce not in attestation_challenges:
-        raise HTTPException(status_code=400, detail="Invalid challenge nonce or nonce expired.")
-        
-    chall_time = attestation_challenges[nonce]
-    if time.time() - chall_time > 300:
-        del attestation_challenges[nonce]
-        raise HTTPException(status_code=400, detail="Attestation challenge timed out.")
-        
-    del attestation_challenges[nonce]
-    
-    result = security.verify_tpm_quote(request.quote, nonce)
-    return result
 
 # --- NEW ENTERPRISE GRC MODULE ENDPOINTS ---
 
@@ -1520,7 +1604,7 @@ def get_ai_providers(db: Session = Depends(database.get_db), current_user: model
             "api_key": masked_key,
             # Usable if a key exists in the DB or the environment, or the
             # provider needs no key (local engines).
-            "has_key": bool(decrypted) or c.id in ["local_evidence", "ollama", "local"],
+            "has_key": bool(decrypted) or c.id in ["inhouse"],
             "key_source": "env" if (env_key and not c.api_key) else ("db" if c.api_key else None),
         })
     return result
@@ -1554,7 +1638,7 @@ def activate_ai_provider(id: str, db: Session = Depends(database.get_db), curren
         db.commit()
         db.refresh(target)
         
-    if id not in ["local_evidence", "ollama", "local"]:
+    if id not in ["inhouse"]:
         # Accept a key from the DB OR the environment (.env). Previously only the
         # DB key was checked, so env-configured providers (e.g. GROQ_API_KEY)
         # could not be activated from the UI.

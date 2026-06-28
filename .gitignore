@@ -7,9 +7,6 @@ backend/.env
 frontend/.env.local
 agent-ui/.env.local
 
-# Backed-up demo databases (created when migrating to the empty-data build)
-backend/_demo_db_backup/
-
 # Dependencies
 node_modules/
 frontend/node_modules/
@@ -31,10 +28,17 @@ __pycache__/
 # Local databases, uploads, and generated runtime data
 *.db
 backend/*.db
+# SQLite WAL/SHM sidecar files (created by WAL journal mode)
+*.db-wal
+*.db-shm
+*.db-journal
 backend/uploads/
 backend/temp_uploads/
 uploads/
 temp_uploads/
+
+# Local Claude Code settings (machine-specific permissions)
+.claude/settings.local.json
 
 # Logs and local run output
 *.log

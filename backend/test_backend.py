@@ -74,36 +74,9 @@ def test_byok_encryption():
     print("SUCCESS: BYOK data protection verified.")
     print()
 
-def test_tpm_attestation():
-    print("--- Testing TPM 2.0 Remote Attestation ---")
-    nonce = "test-challenge-nonce-12345"
-    quote = security.generate_simulated_tpm_quote(nonce)
-    print("Generated TPM quote signature:", quote["signature"][:20] + "...")
-    
-    # Verify with correct nonce
-    verify_result = security.verify_tpm_quote(quote, nonce)
-    print("Verification result (Correct Nonce):", verify_result["reason"])
-    assert verify_result["verified"] is True, "Attestation verification failed with correct nonce."
-    
-    # Verify with wrong nonce
-    verify_wrong_nonce = security.verify_tpm_quote(quote, "wrong-nonce")
-    print("Verification result (Wrong Nonce):  ", verify_wrong_nonce["reason"])
-    assert verify_wrong_nonce["verified"] is False, "Attestation verification should fail with wrong nonce."
-    
-    # Verify with modified PCR (simulated breach)
-    modified_quote = quote.copy()
-    modified_quote["pcrs"] = quote["pcrs"].copy()
-    modified_quote["pcrs"]["PCR0"] = "compromised_system_state_12345"
-    verify_breached = security.verify_tpm_quote(modified_quote, nonce)
-    print("Verification result (Modified PCR):  ", verify_breached["reason"])
-    assert verify_breached["verified"] is False, "Attestation verification should fail with modified PCR."
-    print("SUCCESS: TPM Remote Attestation verified.")
-    print()
-
 if __name__ == "__main__":
     print("=== Running Backend Component Verification Tests ===")
     test_rag_retrieval()
     test_xai_attribution()
     test_byok_encryption()
-    test_tpm_attestation()
     print("ALL TESTS PASSED SUCCESSFULLY!")

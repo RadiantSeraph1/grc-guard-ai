@@ -10,7 +10,7 @@ const inter = Inter({
 
 export const metadata = {
   title: "GRC Guard AI - Governance, Risk & Compliance Platform",
-  description: "Enterprise compliance monitoring, real-world integrations, automated evidence collections, and AI RAG compliance auditor analysis.",
+  description: "Governance, risk, and compliance monitoring with live system integrations, evidence collection, and audit reporting.",
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
