@@ -2,9 +2,10 @@
 
 Every LLM call in the platform routes through here. The active provider is read
 from the per-organization AIProviderConfig table (configured in Settings or via
-environment variables). The default provider is Anthropic Claude; when no key is
-available the gateway degrades gracefully to a deterministic local evidence
-engine so the app keeps working offline.
+environment variables). The target provider is the in-house trained GRC model
+("inhouse"); Groq is the interim provider for testing until that model is ready.
+When no provider is usable the gateway degrades gracefully to a deterministic
+local evidence engine so the app keeps working offline.
 
 Providers are constructed as agno model objects and executed with an agno Agent,
 giving the whole platform a single, consistent agent runtime.
@@ -18,57 +19,42 @@ from database import SessionLocal
 from models import AIProviderConfig
 import security
 
+# All provider configs are org-scoped. Background callers (agents, schedulers)
+# sometimes pass org_id=None; coercing to the default company here prevents
+# creating ownerless (org_id=NULL) rows that double-activate alongside the real
+# per-org row (bug C1).
+DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
+
+# Active AI providers. The platform targets a single in-house trained GRC model
+# ("inhouse"); Groq is the interim provider for testing until that model is ready.
+# Both are served over an OpenAI-compatible API. There is no deterministic
+# fallback engine: when no model is usable the gateway returns an explicit notice
+# rather than fabricating analysis.
+#
 # Default model id per provider (overridable per-org via model_override).
 PROVIDER_DEFAULT_MODEL = {
-    "claude": "claude-sonnet-4-5",
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-4o",
-    "azure_openai": "gpt-4o",
-    "groq": "llama-3.3-70b-versatile",
-    "openrouter": "google/gemini-2.5-flash",
-    "mistral": "mistral-large-latest",
-    "deepseek": "deepseek-chat",
-    "perplexity": "sonar-pro",
-    "xai": "grok-3-mini",
-    "ollama": "llama3.1",
-    "local": "local-model",
-    "vast_ai": "local-model",
-    "custom": "custom-model",
+    "groq": "llama-3.3-70b-versatile",   # interim, remove once "inhouse" is trained
+    "inhouse": "grc-auditor-v1",         # our own trained GRC model
 }
 
-# Base URL for OpenAI-compatible providers (routed through agno's OpenAILike).
+# Base URLs for the OpenAI-compatible providers (routed through agno's OpenAILike).
+# "inhouse" is configured per deployment via the provider's base_url (e.g. a
+# vLLM / TGI endpoint serving the trained model).
 OPENAI_COMPATIBLE_BASE_URL = {
     "groq": "https://api.groq.com/openai/v1",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "mistral": "https://api.mistral.ai/v1",
-    "deepseek": "https://api.deepseek.com/v1",
-    "perplexity": "https://api.perplexity.ai",
-    "xai": "https://api.x.ai/v1",
-    "ollama": "http://localhost:11434/v1",
-    "local": "",
-    "vast_ai": "",
-    "custom": "",
+    "inhouse": "",
 }
 
 OPENAI_COMPATIBLE = set(OPENAI_COMPATIBLE_BASE_URL.keys())
 
 PROVIDER_ENV_KEYS = {
-    "gemini": "GEMINI_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "claude": "ANTHROPIC_API_KEY",
     "groq": "GROQ_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
-    "perplexity": "PERPLEXITY_API_KEY",
-    "xai": "XAI_API_KEY",
-    "azure_openai": "AZURE_OPENAI_API_KEY",
-    "custom": "CUSTOM_AI_API_KEY",
+    "inhouse": "INHOUSE_API_KEY",   # optional: self-hosted endpoints may need no key
 }
 
-# Provider preference when auto-selecting based on available environment keys.
-# Claude is the platform default.
-ENV_PROVIDER_PREFERENCE = ["claude", "openai", "gemini", "groq"]
+# Auto-select preference when an environment key is present: prefer the in-house
+# model, fall back to Groq for now.
+ENV_PROVIDER_PREFERENCE = ["inhouse", "groq"]
 
 
 # ---------------------------------------------------------------------------
@@ -113,44 +99,35 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
 
     If the explicitly-active provider is the local engine (or unset) but an API
     key is available in the environment, transparently promote the preferred
-    real provider (Claude first) so configured keys are used automatically.
+    real provider (in-house first, then Groq) so configured keys are used
+    automatically.
     """
-    query = db.query(AIProviderConfig).filter_by(is_active=True)
-    if org_id:
-        query = query.filter_by(org_id=org_id)
-    config = query.first()
+    # Never operate on ownerless rows: coerce a missing org to the default company
+    # so we read and write a single, consistent per-org provider set (bug C1).
+    org_id = org_id or DEFAULT_COMPANY_ID
+    config = db.query(AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
+    if config:
+        return config
 
-    if (not config or config.id == "local_evidence"):
-        env_provider = _first_env_provider()
-        if env_provider:
-            prov_query = db.query(AIProviderConfig).filter_by(id=env_provider)
-            if org_id:
-                prov_query = prov_query.filter_by(org_id=org_id)
-            prov_config = prov_query.first()
-            if not prov_config:
-                prov_config = AIProviderConfig(id=env_provider, org_id=org_id, is_active=True)
-                db.add(prov_config)
-            else:
-                prov_config.is_active = True
-            inactive = db.query(AIProviderConfig).filter(AIProviderConfig.id != env_provider)
-            if org_id:
-                inactive = inactive.filter(AIProviderConfig.org_id == org_id)
-            inactive.update({"is_active": False})
-            db.commit()
-            db.refresh(prov_config)
-            return prov_config
-
-    if not config:
-        fallback_query = db.query(AIProviderConfig).filter_by(id="local_evidence")
-        if org_id:
-            fallback_query = fallback_query.filter_by(org_id=org_id)
-        config = fallback_query.first()
-        if not config:
-            config = AIProviderConfig(id="local_evidence", is_active=True, org_id=org_id)
-            db.add(config)
-            db.commit()
-            db.refresh(config)
-    return config
+    # No active provider for this org: auto-activate one that has an environment
+    # key (in-house first, then Groq). Returns None when nothing is configured —
+    # callers then surface an honest "no model available" result rather than
+    # fabricating output.
+    env_provider = _first_env_provider()
+    if not env_provider:
+        return None
+    prov_config = db.query(AIProviderConfig).filter_by(id=env_provider, org_id=org_id).first()
+    if not prov_config:
+        prov_config = AIProviderConfig(id=env_provider, org_id=org_id, is_active=True)
+        db.add(prov_config)
+    else:
+        prov_config.is_active = True
+    db.query(AIProviderConfig).filter(
+        AIProviderConfig.id != env_provider, AIProviderConfig.org_id == org_id
+    ).update({"is_active": False})
+    db.commit()
+    db.refresh(prov_config)
+    return prov_config
 
 
 # ---------------------------------------------------------------------------
@@ -230,30 +207,15 @@ def embed_query(text: str) -> Optional[list]:
 # ---------------------------------------------------------------------------
 
 def _build_model(provider: str, api_key: Optional[str], config: AIProviderConfig):
-    """Construct an agno model object for the given provider, or None."""
+    """Construct an agno (OpenAI-compatible) model object for the provider, or None.
+
+    Both supported providers — Groq (interim) and the in-house trained model —
+    speak the OpenAI API, so a single OpenAILike adapter covers them. The in-house
+    provider returns None until its base_url is configured, so callers degrade to
+    the deterministic local fallback rather than erroring.
+    """
     model_id = (config.model_override if config and config.model_override
-                else PROVIDER_DEFAULT_MODEL.get(provider, "custom-model"))
-
-    if provider == "claude":
-        from agno.models.anthropic import Claude
-        return Claude(id=model_id, api_key=api_key)
-
-    if provider == "gemini":
-        from agno.models.google import Gemini
-        return Gemini(id=model_id, api_key=api_key)
-
-    if provider == "openai":
-        from agno.models.openai import OpenAIChat
-        return OpenAIChat(id=model_id, api_key=api_key)
-
-    if provider == "azure_openai":
-        from agno.models.azure import AzureOpenAI
-        return AzureOpenAI(
-            id=model_id,
-            api_key=api_key,
-            azure_endpoint=(config.base_url if config else None) or os.environ.get("AZURE_OPENAI_ENDPOINT"),
-            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
-        )
+                else PROVIDER_DEFAULT_MODEL.get(provider, "grc-auditor-v1"))
 
     if provider in OPENAI_COMPATIBLE:
         from agno.models.openai.like import OpenAILike
@@ -283,10 +245,8 @@ def _run_agent(prompt: str, system_instruction: Optional[str], provider: str,
 
 
 def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
-    if provider == "local_evidence":
-        return False
-    # Local OpenAI-compatible servers (ollama/local/vast) may not require a key.
-    if provider in ("ollama", "local", "vast_ai"):
+    # The in-house self-hosted endpoint may require no API key.
+    if provider == "inhouse":
         return True
     return bool(api_key)
 
@@ -295,97 +255,61 @@ def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
 # Public generation API (signatures preserved for the rest of the app)
 # ---------------------------------------------------------------------------
 
+# Honest message returned when no AI model is configured/usable. There is no
+# deterministic "local evidence" engine that fabricates analysis — callers either
+# get a real model response or this explicit notice.
+MODEL_UNAVAILABLE_MESSAGE = (
+    "No AI model is currently available. Configure the in-house model "
+    "(or Groq for now) in Settings -> AI Gateway and try again."
+)
+
+
+def _usable_config(db, org_id):
+    """Return (config, api_key) for a usable provider, or (None, None)."""
+    config = get_active_provider_config(db, org_id=org_id)
+    if not config:
+        return None, None
+    api_key = get_decrypted_key(config)
+    if not _provider_usable(config.id, api_key):
+        return None, None
+    return config, api_key
+
+
 def generate_content(prompt: str, system_instruction: Optional[str] = None, org_id: str = None) -> str:
-    """Unified text generation routed through agno."""
+    """Unified text generation routed through agno. Returns an explicit notice
+    when no model is configured (never fabricated analysis)."""
     db = SessionLocal()
     try:
-        config = get_active_provider_config(db, org_id=org_id)
-        provider = config.id
-        api_key = get_decrypted_key(config)
-        if not _provider_usable(provider, api_key):
-            return local_evidence_text_fallback(prompt)
-        return _run_agent(prompt, system_instruction, provider, api_key, config)
+        config, api_key = _usable_config(db, org_id)
+        if not config:
+            return MODEL_UNAVAILABLE_MESSAGE
+        return _run_agent(prompt, system_instruction, config.id, api_key, config)
     except Exception as e:
-        print(f"Error in AI Gateway: {str(e)}. Falling back to local evidence.")
-        return local_evidence_text_fallback(prompt)
+        print(f"Error in AI Gateway: {str(e)}.")
+        return MODEL_UNAVAILABLE_MESSAGE
     finally:
         db.close()
 
 
 def generate_structured_json(prompt: str, schema: dict, system_instruction: Optional[str] = None, org_id: str = None) -> dict:
-    """Unified structured JSON generation routed through agno."""
+    """Unified structured JSON generation routed through agno. Returns an empty
+    dict when no model is usable so callers degrade gracefully (they read fields
+    with .get())."""
     db = SessionLocal()
     try:
-        config = get_active_provider_config(db, org_id=org_id)
-        provider = config.id
-        api_key = get_decrypted_key(config)
-        if not _provider_usable(provider, api_key):
-            return local_evidence_json_fallback(prompt, schema)
+        config, api_key = _usable_config(db, org_id)
+        if not config:
+            return {}
         json_guideline = ("\n\nReturn your response STRICTLY as a single JSON object "
                           "matching this schema (no prose, no markdown fences):\n"
                           + json.dumps(schema, indent=2))
-        raw_text = _run_agent(prompt + json_guideline, system_instruction, provider, api_key, config)
+        raw_text = _run_agent(prompt + json_guideline, system_instruction, config.id, api_key, config)
         return parse_json_safely(raw_text)
     except Exception as e:
-        print(f"Error in AI Gateway JSON generation: {str(e)}. Falling back to local evidence.")
-        return local_evidence_json_fallback(prompt, schema)
+        print(f"Error in AI Gateway JSON generation: {str(e)}.")
+        return {}
     finally:
         db.close()
-
-
-# ---------------------------------------------------------------------------
-# Local evidence fallbacks (no external calls)
-# ---------------------------------------------------------------------------
-
-def local_evidence_text_fallback(prompt: str) -> str:
-    prompt_lower = prompt.lower()
-    if "evaluate" in prompt_lower or "policy" in prompt_lower:
-        return ("Local Evidence Engine audit report: Configuration checks identify that standard access "
-                "control directories are initialized. Policy document aligns with corporate baseline requirements.")
-    return ("Local Evidence Engine: Task processed successfully. To enable advanced semantic reasoning, "
-            "configure an active LLM provider (Claude by default) in the Settings panel.")
-
-
-def local_evidence_json_fallback(prompt: str, schema: dict) -> dict:
-    result = {}
-    properties = schema.get("properties", {})
-    for key, val in properties.items():
-        v_type = val.get("type")
-        if v_type == "string":
-            if key == "decision":
-                result[key] = "COMPLIANT" if "cet1" in prompt.lower() or "mask" in prompt.lower() else "VIOLATION"
-            elif key == "category":
-                result[key] = "General Banking Standards"
-            else:
-                result[key] = "Local evidence analyzer fallback check completed successfully."
-        elif v_type in ("integer", "number"):
-            result[key] = 10
-        elif v_type == "boolean":
-            result[key] = True
-        elif v_type == "array":
-            result[key] = []
-        elif v_type == "object":
-            result[key] = {}
-
-    if "decision" in result:
-        text_lower = prompt.lower()
-        if "cet1" in text_lower or "capital adequacy" in text_lower:
-            result["category"] = "Basel III Capital Adequacy"
-            if "below" in text_lower or "5%" in text_lower:
-                result["decision"] = "VIOLATION"
-                result["explanation"] = "Local Fallback: CET1 ratio falls below the Basel III minimum regulatory requirement."
-            else:
-                result["decision"] = "COMPLIANT"
-                result["explanation"] = "Local Fallback: Capital adequacy checks satisfy Basel III requirements."
-        elif "pii" in text_lower or "encryption" in text_lower:
-            result["category"] = "GDPR Data Protection"
-            if "unencrypted" in text_lower or "raw" in text_lower:
-                result["decision"] = "VIOLATION"
-                result["explanation"] = "Local Fallback: Unencrypted customer records violate GDPR Article 25 privacy requirements."
-            else:
-                result["decision"] = "COMPLIANT"
-                result["explanation"] = "Local Fallback: Data storage confirms baseline encryption standards."
-    return result
 
 
 def parse_json_safely(text: str) -> dict:

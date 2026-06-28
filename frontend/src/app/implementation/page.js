@@ -90,20 +90,6 @@ export default function ImplementationPage() {
               )}
             </div>
           </Card>
-
-          <Card>
-            <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-              <FileText size={15} className="text-zinc-400" /> Demo Script
-            </h3>
-            <div className="space-y-3 mt-4">
-              {(report?.demo_script || []).map((step, index) => (
-                <div key={step} className="flex gap-3 text-xs text-zinc-400 leading-relaxed">
-                  <span className="w-5 h-5 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 flex items-center justify-center text-xs shrink-0">{index + 1}</span>
-                  <span>{step}</span>
-                </div>
-              ))}
-            </div>
-          </Card>
         </div>
       </div>
     </PageContainer>

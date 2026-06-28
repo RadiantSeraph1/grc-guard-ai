@@ -4,7 +4,7 @@
 - Frontend: Next.js App Router, Clerk auth, dark operational dashboard UI.
 - Backend: FastAPI, SQLAlchemy, SQLite for app data, sidecar SQLite for RAG chunks and audit logs.
 - Auth: Clerk JWT for app users, hidden super-admin access-key session for emergency/platform control.
-- AI: provider router through `ai_gateway.py`, with local evidence fallback.
+- AI: provider router through `ai_gateway.py`, targeting an in-house trained model with Groq as the interim provider; no fabricated fallback.
 - Storage: local fallback with optional S3-compatible helper.
 
 ## Core Backend Domains
@@ -13,7 +13,7 @@
 - Risk: `Risk`, `Vendor`, asset exposure, residual scoring.
 - Evidence: `Evidence`, upload validation, freshness, control linkage.
 - AI/RAG: document chunks, search, corpus stats, analysis, agents.
-- Integration: cloud, identity, developer, HRIS, MDM/EDR systems plus simulation.
+- Integration: cloud, identity, developer, HRIS, MDM/EDR systems via live vendor APIs.
 
 ## API Additions
 - `GET /api/rag/corpus`
@@ -30,8 +30,8 @@
 - AI provider and integration secrets are encrypted before storage.
 
 ## Non-Functional Requirements
-- Local-first operation with no required external LLM.
-- Deterministic fallback for demos and offline testing.
+- App runs without an external LLM (deterministic scanner + RAG + dashboards); AI enrichment requires the in-house model or Groq.
+- No fabricated AI fallback: when no model is usable, AI features return an explicit notice.
 - Source-grounded analysis with citations from RAG.
 - No frontend exposure of server secrets through `NEXT_PUBLIC_`.
 - Safe upload filenames and bounded file sizes.

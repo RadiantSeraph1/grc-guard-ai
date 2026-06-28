@@ -86,8 +86,8 @@ export default function ScannerPage() {
   return (
     <PageContainer>
       <PageHeader
-        eyebrow="Cognitive Audit Scanner"
-        title="AI Compliance Scanner"
+        eyebrow="Audit Scanner"
+        title="Compliance Scanner"
         description="Scan configurations, transactions, or log entries and evaluate them against regulatory rules with explainable attributions."
       />
 

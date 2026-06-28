@@ -11,12 +11,23 @@ from dotenv import load_dotenv
 # Load env variables
 load_dotenv()
 
-DB_PATH = "grc_database.db"
+# The RAG corpus lives in its own SQLite file so it never shares a filename with
+# the SQLAlchemy ORM database (which previously also defaulted to
+# grc_database.db). Two access styles (raw sqlite3 here, SQLAlchemy there) on one
+# file was fragile; they are now fully separated. Override with RAG_DB_PATH.
+DB_PATH = os.environ.get("RAG_DB_PATH", "grc_rag_corpus.db")
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
+
+def _rag_connect():
+    """Open the RAG corpus SQLite DB with WAL + a busy timeout (C4)."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    return conn
 
 def init_db():
     """Initialize the SQLite database for company-scoped RAG chunks."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = _rag_connect()
     cursor = conn.cursor()
     # Table for document chunks
     cursor.execute("""
@@ -147,7 +158,7 @@ def ingest_document(file_path, filename, org_id=DEFAULT_COMPANY_ID, source_type=
     """Parse and ingest supported documents into the target company knowledge base."""
     init_db()
     pages = parse_document(file_path)
-    conn = sqlite3.connect(DB_PATH)
+    conn = _rag_connect()
     cursor = conn.cursor()
     
     # Check if already ingested for this company.
@@ -196,7 +207,7 @@ def ingest_pdf(file_path, filename, org_id=DEFAULT_COMPANY_ID):
 def corpus_stats(org_id=DEFAULT_COMPANY_ID):
     """Return corpus counts and source-level chunk distribution."""
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _rag_connect()
     cursor = conn.cursor()
     cursor.execute(
         "SELECT filename, COUNT(*), SUM(token_count), MAX(page_number) FROM document_chunks WHERE org_id = ? GROUP BY filename ORDER BY filename",
@@ -244,7 +255,7 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
     searchable offline. The returned shape is unchanged for all callers.
     """
     init_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = _rag_connect()
     cursor = conn.cursor()
     cursor.execute("SELECT id, filename, page_number, content, embedding FROM document_chunks WHERE org_id = ?", (org_id,))
     all_chunks = cursor.fetchall()
@@ -329,5 +340,5 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
     return scored_chunks[:limit]
 
 # Initialize the RAG corpus schema on import. The corpus starts EMPTY - no
-# sample/demo regulations are seeded. Documents are added via /api/ingest.
+# regulations are seeded. Documents are added via /api/ingest.
 init_db()

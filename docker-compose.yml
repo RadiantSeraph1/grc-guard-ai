@@ -1,0 +1,30 @@
+# GRC Auditor — runs the two services as independent, deployable units.
+# Backend (Python/FastAPI) and Frontend (Next.js) share NOTHING but the HTTP
+# boundary defined by BACKEND_API_BASE_URL.
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8001:8001"
+    # SQLite data files persist on a named volume so they survive restarts.
+    volumes:
+      - backend_data:/app
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      # Inside the compose network the backend is reachable by service name.
+      BACKEND_API_BASE_URL: http://backend:8001
+    env_file:
+      - ./frontend/.env.local
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend_data:

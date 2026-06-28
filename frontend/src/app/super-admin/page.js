@@ -25,21 +25,8 @@ const ROLES = ["SuperAdmin", "Admin", "Editor", "Auditor", "Viewer", "Employee"]
 const STATUSES = ["Active", "Onboarding", "Offboarding", "Suspended"];
 const INTEGRATION_STATUSES = ["Connected", "Configured", "Disconnected", "Error"];
 const PROVIDER_DETAILS = {
-  local_evidence: { name: "Local Evidence", desc: "Deterministic local rule engine fallback.", url: "", model: "local-evidence" },
-  gemini: { name: "Google Gemini", desc: "Google GenAI native adapter.", url: "", model: "gemini-2.5-flash" },
-  openai: { name: "OpenAI", desc: "OpenAI chat completions adapter.", url: "https://api.openai.com/v1/chat/completions", model: "gpt-4o" },
-  claude: { name: "Anthropic Claude", desc: "Claude Messages API adapter.", url: "", model: "claude-3-5-sonnet-20241022" },
-  groq: { name: "Groq", desc: "Low-latency OpenAI-compatible inference.", url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.3-70b-versatile" },
-  openrouter: { name: "OpenRouter", desc: "Multi-provider model routing gateway.", url: "https://openrouter.ai/api/v1/chat/completions", model: "google/gemini-2.5-flash" },
-  mistral: { name: "Mistral AI", desc: "Mistral OpenAI-compatible chat endpoint.", url: "https://api.mistral.ai/v1/chat/completions", model: "mistral-large-latest" },
-  deepseek: { name: "DeepSeek", desc: "DeepSeek chat and reasoning models.", url: "https://api.deepseek.com/v1/chat/completions", model: "deepseek-chat" },
-  perplexity: { name: "Perplexity", desc: "Search-grounded Sonar models.", url: "https://api.perplexity.ai/chat/completions", model: "sonar-pro" },
-  xai: { name: "xAI", desc: "Grok API through OpenAI-compatible chat.", url: "https://api.x.ai/v1/chat/completions", model: "grok-3-mini" },
-  azure_openai: { name: "Azure OpenAI", desc: "Azure deployment endpoint. Paste full chat completions URL.", url: "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=2024-10-21", model: "gpt-4o" },
-  ollama: { name: "Ollama", desc: "Local Ollama OpenAI-compatible endpoint.", url: "http://localhost:11434/v1/chat/completions", model: "llama3.1" },
-  local: { name: "Local vLLM", desc: "Self-hosted OpenAI-compatible endpoint.", url: "", model: "custom-model" },
-  vast_ai: { name: "Vast.ai", desc: "Self-hosted GPU endpoint.", url: "", model: "custom-model" },
-  custom: { name: "Custom", desc: "Any OpenAI-compatible chat endpoint.", url: "", model: "custom-model" }
+  inhouse: { name: "In-House GRC Model", desc: "Our own trained model on an OpenAI-compatible endpoint.", url: "", model: "grc-auditor-v1" },
+  groq: { name: "Groq (interim)", desc: "Low-latency OpenAI-compatible inference for testing.", url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.3-70b-versatile" }
 };
 const PROVIDER_ORDER = Object.keys(PROVIDER_DETAILS);
 
@@ -409,28 +396,19 @@ export default function SuperAdminPage() {
         <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {([...(control?.ai_providers || [])].sort((a, b) => PROVIDER_ORDER.indexOf(a.id) - PROVIDER_ORDER.indexOf(b.id))).map((provider) => {
             const draft = providerDrafts[provider.id] || {};
-            const details = PROVIDER_DETAILS[provider.id] || { name: provider.id, desc: "Custom provider.", url: "", model: "custom-model" };
-            const builtInProvider = provider.id === "local_evidence";
+            const details = PROVIDER_DETAILS[provider.id] || { name: provider.id, desc: "Provider.", url: "", model: "custom-model" };
+            const keyless = provider.id === "inhouse";   // self-hosted endpoint may need no key
             return (
               <div key={provider.id} className="bg-[#121215] border border-zinc-800 rounded-lg p-5 space-y-4">
                 <div className="flex items-start justify-between">
-                  <div><h3 className="text-sm font-semibold text-zinc-100">{details.name}</h3><p className="text-[10px] text-zinc-500 mt-1">{details.desc}</p><p className="text-[10px] text-zinc-600 mt-1">{builtInProvider ? "Built in, no external key required" : provider.has_api_key ? "API key stored" : "No API key stored"}</p></div>
+                  <div><h3 className="text-sm font-semibold text-zinc-100">{details.name}</h3><p className="text-[10px] text-zinc-500 mt-1">{details.desc}</p><p className="text-[10px] text-zinc-600 mt-1">{provider.has_api_key ? "API key stored" : keyless ? "No key required" : "No API key stored"}</p></div>
                   {provider.is_active ? <span className="text-[9px] bg-emerald-500/10 text-emerald-400 rounded px-2 py-1 font-semibold">Active</span> : <span className="text-[9px] bg-zinc-800 text-zinc-500 rounded px-2 py-1 font-semibold">Standby</span>}
                 </div>
-                {!builtInProvider && (
-                  <>
-                    <Input label="Base URL" value={draft.base_url ?? provider.base_url ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), base_url: value } }))} placeholder={details.url || "Native adapter or custom endpoint"} />
-                    <Input label="Model" value={draft.model_override ?? provider.model_override ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), model_override: value } }))} placeholder={details.model} />
-                    <Input label="API Key" type="password" value={draft.api_key ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), api_key: value } }))} placeholder="Paste new key" />
-                  </>
-                )}
-                {builtInProvider && (
-                  <div className="rounded-lg border border-zinc-850 bg-zinc-950/60 p-3 text-xs text-zinc-500 leading-relaxed">
-                    Local Evidence is always available as the deterministic fallback. Activate it when you want the app to run without external LLM calls.
-                  </div>
-                )}
+                <Input label="Base URL" value={draft.base_url ?? provider.base_url ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), base_url: value } }))} placeholder={details.url || "OpenAI-compatible endpoint URL"} />
+                <Input label="Model" value={draft.model_override ?? provider.model_override ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), model_override: value } }))} placeholder={details.model} />
+                <Input label={keyless ? "API Key (optional)" : "API Key"} type="password" value={draft.api_key ?? ""} onChange={(value) => setProviderDrafts((prev) => ({ ...prev, [provider.id]: { ...(prev[provider.id] || {}), api_key: value } }))} placeholder={keyless ? "Optional for self-hosted" : "Paste new key"} />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {!builtInProvider && <button onClick={() => runAction(`save-ai-${provider.id}`, () => apiRequest(`/api/super-admin/ai-providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(draft) }))} className="bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg py-2 text-xs font-semibold">Save</button>}
+                  <button onClick={() => runAction(`save-ai-${provider.id}`, () => apiRequest(`/api/super-admin/ai-providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(draft) }))} className="bg-zinc-900 border border-zinc-800 text-zinc-200 rounded-lg py-2 text-xs font-semibold">Save</button>
                   <button onClick={() => runAction(`activate-ai-${provider.id}`, () => apiRequest(`/api/super-admin/ai-providers/${provider.id}`, { method: "PATCH", body: JSON.stringify({ ...draft, activate: true }) }))} className="bg-zinc-100 text-zinc-950 rounded-lg py-2 text-xs font-semibold">Activate</button>
                 </div>
               </div>

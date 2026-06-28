@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
@@ -84,7 +84,7 @@ export default function Sidebar() {
       { name: "Compliance Reports", href: "/reports", icon: FileBarChart },
       { name: "Trust Center", href: "/trust", icon: FileCode }
     ]},
-    { category: "COGNITIVES", items: [
+    { category: "ANALYSIS", items: [
       { name: "AI Agents Center", href: "/ai", icon: Cpu },
       { name: "Benchmark Evaluation", href: "/evaluation", icon: Activity }
     ]},
@@ -131,7 +131,6 @@ export default function Sidebar() {
                 <Image src="/grc-guard-logo.svg" alt="GRC Guard AI" width={24} height={24} className="w-6 h-6 rounded-md shadow-sm" />
                 <div>
                   <h1 className="font-medium text-zinc-150 text-xs tracking-wide">GRC GUARD AI</h1>
-                  <span className="text-[9px] text-zinc-500 font-semibold tracking-wider uppercase">Enterprise</span>
                 </div>
               </div>
             )}
@@ -150,17 +149,6 @@ export default function Sidebar() {
             </button>
           </div>
 
-          {isExpanded && (
-            <div className="w-full">
-              <Link
-                href="/profile"
-                className="w-full bg-zinc-900 hover:bg-zinc-850 text-zinc-200 border border-zinc-800 text-[10px] h-7 px-2.5 rounded-lg shadow-sm flex items-center justify-between transition-colors"
-              >
-                <span className="truncate">ARB Apex Bank</span>
-                <span className="text-zinc-500">Departments</span>
-              </Link>
-            </div>
-          )}
         </div>
 
         {/* Nav List - completely hidden scrollbar */}
@@ -213,7 +201,6 @@ export default function Sidebar() {
                   <UserButton afterSignOutUrl="/" userProfileMode="navigation" userProfileUrl="/account" />
                   <div className="flex flex-col">
                     <span className="text-[10px] font-medium text-zinc-200 truncate max-w-[90px]">My Account</span>
-                    <span className="text-[8px] text-zinc-500">Security Vault</span>
                   </div>
                 </div>
                 <SignOutButton redirectUrl="/">

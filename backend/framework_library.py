@@ -1,7 +1,7 @@
 """Framework library + control mappings.
 
 The platform ships empty, but a GRC tool's value is mapping live evidence to a
-recognised standard. This module is an *importable catalog* (not demo data):
+recognised standard. This module is an *importable catalog* (not sample data):
 the operator chooses which frameworks to bring into their organization, and on
 import we materialise the controls that framework requires.
 

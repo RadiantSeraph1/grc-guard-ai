@@ -29,7 +29,6 @@ const DEFAULT_STATS = {
   compliance_delta: null,
 };
 
-const INTEGRATION_ICON = { aws: "☁️", okta: "🔑", gcp: "🌐", azure: "🔷", github: "🐙" };
 
 export default function DashboardPage() {
   const { user } = useUser();
@@ -238,8 +237,8 @@ export default function DashboardPage() {
                   className="flex items-center justify-between p-2.5 rounded-lg bg-zinc-900/40 border border-zinc-800/70"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-zinc-900 flex items-center justify-center text-sm border border-zinc-800 shrink-0">
-                      {INTEGRATION_ICON[int.id] || "🔌"}
+                    <div className="w-8 h-8 rounded-lg bg-zinc-900 flex items-center justify-center text-xs font-semibold text-zinc-300 border border-zinc-800 shrink-0">
+                      {(int.name || int.id || "?").slice(0, 2).toUpperCase()}
                     </div>
                     <div className="min-w-0">
                       <h4 className="text-sm font-medium text-zinc-200 truncate">{int.name}</h4>

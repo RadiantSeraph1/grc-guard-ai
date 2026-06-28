@@ -9,11 +9,14 @@ import {
 import { useApi } from "../lib/api";
 
 const AGENTS = [
-  { id: "compliance_agent", name: "Compliance Agent", emoji: "📋", blurb: "Audits policy drafts against framework controls (Basel, GDPR, SOC 2, ISO 27001, PCI-DSS).", greeting: "Compliance Agent ready. Paste a policy draft or ask how a requirement maps to your controls." },
-  { id: "tprm_agent", name: "TPRM Vendor Agent", emoji: "🤝", blurb: "Evaluates third-party vendor security questionnaires and risk tiers.", greeting: "TPRM Agent ready. Share a vendor's questionnaire answers and I'll assess inherent risk and a recommended status." },
-  { id: "trust_agent", name: "Customer Trust Agent", emoji: "🛡️", blurb: "Answers customer security questions grounded in your real controls.", greeting: "Customer Trust Agent ready. Ask a customer-style security question and I'll answer from your actual posture." },
-  { id: "risk_agent", name: "Risk Propagation Agent", emoji: "🕸️", blurb: "Traces how failing controls cascade risk across the GRC graph.", greeting: "Risk Propagation Agent ready. Name a control, asset, or integration and I'll trace its risk path." },
+  { id: "compliance_agent", name: "Compliance Agent", blurb: "Audits policy drafts against framework controls (Basel, GDPR, SOC 2, ISO 27001, PCI-DSS).", greeting: "Compliance Agent ready. Paste a policy draft or ask how a requirement maps to your controls." },
+  { id: "tprm_agent", name: "TPRM Vendor Agent", blurb: "Evaluates third-party vendor security questionnaires and risk tiers.", greeting: "TPRM Agent ready. Share a vendor's questionnaire answers and I'll assess inherent risk and a recommended status." },
+  { id: "trust_agent", name: "Customer Trust Agent", blurb: "Answers customer security questions grounded in your real controls.", greeting: "Customer Trust Agent ready. Ask a customer-style security question and I'll answer from your actual posture." },
+  { id: "risk_agent", name: "Risk Propagation Agent", blurb: "Traces how failing controls cascade risk across the GRC graph.", greeting: "Risk Propagation Agent ready. Name a control, asset, or integration and I'll trace its risk path." },
 ];
+
+// Monogram initials from a name, e.g. "Compliance Agent" -> "CA".
+const initials = (name = "") => name.split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "AI";
 
 const agentById = (id) => AGENTS.find((a) => a.id === id) || AGENTS[0];
 const STORAGE_PREFIX = "grc_ai_chats:";
@@ -131,7 +134,7 @@ export default function AiPage() {
         ...s,
         messages: [...s.messages, {
           role: "assistant",
-          text: "⚠️ The agent runtime is unavailable. Make sure the backend is running (port 8001) and an AI provider (Claude by default) is configured in Settings.",
+          text: "The agent runtime is unavailable. Make sure the backend is running (port 8001) and an AI provider (Groq for now, or the in-house model) is configured in Settings.",
           steps: [],
         }],
       }));
@@ -162,7 +165,7 @@ export default function AiPage() {
     if (status === "Warning") return "border-amber-500/40 text-amber-400 bg-amber-500/5";
     return "border-rose-500/40 text-rose-400 bg-rose-500/5";
   };
-  const nodeIcon = (type) => (type === "integration" ? "🔌" : type === "asset" ? "💾" : type === "control" ? "🛡️" : "⚠️");
+  const nodeIcon = (type) => (type === "integration" ? "IN" : type === "asset" ? "AS" : type === "control" ? "CT" : "RK");
 
   const currentAgent = agentById(active?.agent);
 
@@ -212,7 +215,7 @@ export default function AiPage() {
                 active?.agent === a.id ? "bg-zinc-800/80 text-zinc-100 border border-zinc-700" : "text-zinc-400 hover:bg-zinc-900/70 border border-transparent"
               }`}
             >
-              <span className="text-base">{a.emoji}</span>
+              <span className="text-[10px] font-semibold text-zinc-300">{initials(a.name)}</span>
               <span className="text-xs font-medium truncate">{a.name}</span>
             </button>
           ))}
@@ -232,7 +235,7 @@ export default function AiPage() {
         {/* Header */}
         <header className="flex items-center justify-between px-6 py-3 border-b border-zinc-800/80 bg-[#0c0c0f]/60 backdrop-blur">
           <div className="flex items-center gap-3 min-w-0">
-            <span className="text-xl">{currentAgent.emoji}</span>
+            <span className="text-xs font-semibold text-zinc-300">{initials(currentAgent?.name)}</span>
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-zinc-100 truncate">{view === "graph" ? "Relational Trust Graph" : currentAgent.name}</h2>
               <p className="text-[11px] text-zinc-500 truncate">{view === "graph" ? "GRC nodes and links from your live data." : currentAgent.blurb}</p>
@@ -253,7 +256,7 @@ export default function AiPage() {
                 ))}
                 {querying && (
                   <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-base shrink-0">{currentAgent.emoji}</div>
+                    <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-xs font-semibold text-zinc-300 shrink-0">{initials(currentAgent?.name)}</div>
                     <div className="flex items-center gap-2 text-zinc-400 text-sm pt-1.5">
                       <Loader2 size={14} className="animate-spin" />
                       <span className="animate-pulse">Thinking — retrieving controls, evidence, and graph context…</span>
@@ -309,7 +312,7 @@ function Message({ message, agent }) {
   }
   return (
     <div className="flex items-start gap-3">
-      <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-base shrink-0">{agent.emoji}</div>
+      <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-xs font-semibold text-zinc-300 shrink-0">{initials(agent?.name)}</div>
       <div className="min-w-0 flex-1 space-y-2">
         {Array.isArray(message.steps) && message.steps.length > 0 && <ThinkingPanel steps={message.steps} />}
         <div className="bg-[#16161a] border border-zinc-800/80 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-zinc-200 whitespace-pre-wrap break-words leading-relaxed">
@@ -381,7 +384,7 @@ function GraphView({ nodes, onRefresh, nodeColor, nodeIcon }) {
             {nodes.map((node) => (
               <div key={node.id} className={`p-3.5 rounded-xl border flex flex-col justify-between space-y-3 ${nodeColor(node.status, node.type)}`}>
                 <div className="flex items-start justify-between">
-                  <span className="text-base">{nodeIcon(node.type)}</span>
+                  <span className="text-[10px] font-semibold tracking-wide opacity-80">{nodeIcon(node.type)}</span>
                   <span className="text-[8px] font-extrabold uppercase tracking-widest text-zinc-500">{node.type}</span>
                 </div>
                 <div>

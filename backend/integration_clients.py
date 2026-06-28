@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 # ---------------------------------------------------------------------------
 # The catalog defines every data source the platform can connect to. Rows are
 # provisioned per-organization (status "Disconnected") so operators can connect
-# real systems. There is no demo data behind these - each connector talks to a
+# real systems. There is no canned data behind these - each connector talks to a
 # live vendor API when credentials are supplied.
 INTEGRATION_CATALOG: List[Dict[str, str]] = [
     {"id": "aws", "name": "Amazon Web Services", "category": "Cloud",

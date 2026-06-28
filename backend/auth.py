@@ -29,11 +29,9 @@ SUPER_ADMIN_USER_IDS = {
     for user_id in os.environ.get("SUPER_ADMIN_USER_IDS", "").split(",")
     if user_id.strip()
 }
-SUPER_ADMIN_USERNAMES = {
-    username.strip().lower()
-    for username in os.environ.get("SUPER_ADMIN_USERNAMES", "radiantseraph1").split(",")
-    if username.strip()
-}
+# Super-admin is granted only by immutable Clerk user id (`sub`) or by a
+# Clerk-verified email. Username-based grants were removed: usernames are more
+# user-controllable and were an escalation risk (A2).
 
 # Cache for JWKS keys to avoid querying Clerk API on every request
 jwks_cache = {}
@@ -88,7 +86,7 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
         
     token = parts[1]
     
-    # Mock/Bypass mode for local testing/demo without Clerk keys
+    # Mock/Bypass mode for local testing without Clerk keys
     if CLERK_MOCK_AUTH:
         try:
             # Decode token without signature verification to extract claims
@@ -195,19 +193,24 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
     email = payload.get("email") or payload.get("email_address")
     name = payload.get("name") or payload.get("first_name", "") + " " + payload.get("last_name", "")
     name = (name or email or clerk_id or "Active User").strip()
-    username = payload.get("username") or payload.get("preferred_username")
+    # Only trust the email for elevation if Clerk marked it verified (when the
+    # claim is present). Clerk omits the claim in some token templates, so absence
+    # is treated as "not asserted" rather than failing closed for normal users.
+    email_verified = payload.get("email_verified", True)
     
     org_id = DEFAULT_COMPANY_ID
     org_name = DEFAULT_COMPANY_NAME
     
-    # Metadata contains user role and department
+    # Metadata contains user role and department. Default to the least-privileged
+    # role ("Viewer") so a user whose Clerk metadata omits a role cannot silently
+    # gain write/admin access (fail-closed). Elevated roles must be granted
+    # explicitly via Clerk public_metadata or the super-admin allowlist below.
     metadata = payload.get("public_metadata", {})
-    role = metadata.get("role", "Admin")
+    role = metadata.get("role", "Viewer")
     department = metadata.get("department", "General")
     if (
         clerk_id in SUPER_ADMIN_USER_IDS
-        or (email and email.lower() in SUPER_ADMIN_EMAILS)
-        or (username and username.lower() in SUPER_ADMIN_USERNAMES)
+        or (email and email_verified and email.lower() in SUPER_ADMIN_EMAILS)
     ):
         role = "SuperAdmin"
         department = "Platform Governance"

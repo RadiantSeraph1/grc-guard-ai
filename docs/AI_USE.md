@@ -4,9 +4,8 @@
 AI assists auditors by summarizing posture, classifying scenarios, mapping evidence to regulations, and producing remediation recommendations. It does not replace auditor sign-off.
 
 ## Modes
-- Local Evidence: deterministic rules and RAG citations, no external AI call.
-- External Provider: active configured provider receives bounded prompts and source context.
-- Simulation: fake system credentials produce deterministic evidence for testing workflows.
+- Active model: the in-house trained GRC model (or Groq for now) receives bounded prompts and source context.
+- No model available: when no provider is usable, AI features return an explicit "no model available" notice — never fabricated analysis. The scanner still produces a deterministic keyword-rule verdict with RAG citations.
 
 ## Guardrails
 - Prefer RAG context and structured app data over free-form reasoning.

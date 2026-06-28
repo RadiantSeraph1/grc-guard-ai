@@ -122,7 +122,7 @@ export default function ProfilePage() {
 
   return (
     <PageContainer>
-      <PageHeader eyebrow="Enterprise Directory" title="Profile & Team Management" description="View your secure profile credentials and manage department users." />
+      <PageHeader eyebrow="Team Directory" title="Profile & Team Management" description="View your secure profile credentials and manage department users." />
 
       <div className="flex border-b border-zinc-800 gap-6 text-xs">
         {[["profile", "My Profile"], ["database", "Database Registry"]].map(([id, label]) => (
