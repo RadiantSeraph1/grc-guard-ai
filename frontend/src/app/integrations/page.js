@@ -252,7 +252,7 @@ export default function IntegrationsPage() {
       {/* Connect modal */}
       <Modal
         open={!!activeIntegration}
-        onClose={() => { setActiveIntegration(null); setCredentials(""); }}
+        onClose={() => { setActiveIntegration(null); setCredValues({}); }}
         title={activeIntegration ? `Connect ${activeIntegration.name}` : ""}
         description="Save real read-only credentials, then run Sync to pull live control data."
         size="md"
