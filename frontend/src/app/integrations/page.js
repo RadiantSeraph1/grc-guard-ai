@@ -78,15 +78,12 @@ export default function IntegrationsPage() {
 
     if (connectionMode === "oauth") {
       try {
-        const res = await api.raw("GET", `/api/integrations/${activeIntegration.id}/authorize`);
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          alert(data.detail || "OAuth is not configured for this connector.");
-          return;
-        }
-        window.location.href = res.url;
+        // The endpoint returns the vendor authorize URL as JSON; navigating the
+        // browser there avoids the CORS wall a fetch() redirect would hit.
+        const data = await api.get(`/api/integrations/${activeIntegration.id}/authorize`);
+        window.location.href = data.authorize_url;
       } catch (err) {
-        alert(`OAuth request failed: ${err.message}`);
+        alert(err instanceof ApiError ? err.message : `OAuth request failed: ${err.message}`);
       }
       return;
     }

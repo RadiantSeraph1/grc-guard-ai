@@ -1934,15 +1934,19 @@ def get_integration_logs(id: str, db: Session = Depends(database.get_db), curren
 # OAuth redirects and callbacks for integrations
 @app.get("/api/integrations/{id}/authorize")
 def oauth_authorize(id: str, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    from fastapi.responses import RedirectResponse
+    """Return the vendor authorize URL as JSON. The frontend navigates the
+    browser to it — a fetch() cannot follow a cross-origin redirect into
+    github.com (CORS), which is why this is not a RedirectResponse."""
     if id == "github":
         client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
-        api_base = os.environ.get("PUBLIC_API_BASE_URL", "http://localhost:8000").rstrip("/")
+        api_base = os.environ.get("PUBLIC_API_BASE_URL", "http://localhost:8001").rstrip("/")
         redirect_uri = f"{api_base}/api/integrations/github/callback"
-        
+
         if client_id and client_id != "your_github_client_id":
-            authorize_url = f"https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=repo,read:org&state={current_user.org_id}"
-            return RedirectResponse(authorize_url)
+            return {"authorize_url": (
+                f"https://github.com/login/oauth/authorize?client_id={client_id}"
+                f"&redirect_uri={redirect_uri}&scope=repo,read:org&state={current_user.org_id}"
+            )}
         raise HTTPException(status_code=400, detail="GitHub OAuth is not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
     raise HTTPException(status_code=400, detail=f"OAuth is not configured for {id}. Use API credentials for this system.")
 
@@ -1985,32 +1989,19 @@ def oauth_callback(code: str, state: str = DEFAULT_COMPANY_ID, db: Session = Dep
     if not token:
         raise HTTPException(status_code=400, detail="GitHub OAuth exchange failed. No access token was returned.")
 
-    # Store token under company state
+    # Store the token under the org. Credentials are the same JSON shape the
+    # connect form produces, so the sync handler reads them identically.
+    # No control/asset statuses are touched here — OAuth only proves we CAN
+    # audit; the real verdict comes from running Sync.
     integration = db.query(models.Integration).filter_by(id="github", org_id=state).first()
     if not integration:
-        integration = models.Integration(id="github", org_id=state, name="GitHub Developer Portal", category="Developer")
+        integration = models.Integration(id="github", org_id=state, name="GitHub", category="Developer")
         db.add(integration)
-        
-    integration.status = "Connected"
-    integration.last_sync = int(time.time())
-    
-    # Encrypt
-    vault_key = get_required_vault_key()
-    integration.credentials = security.encrypt_log(token, vault_key)
-    
-    # Cascade status updates to matching assets and controls (live integrations effect)
-    control = db.query(models.Control).filter_by(control_code="GIT-BR-01", org_id=state).first()
-    if control: 
-        control.status = "Passing"
-        control.last_tested = int(time.time())
-    asset = db.query(models.Asset).filter_by(integration_id="github", org_id=state).first()
-    if asset: 
-        asset.compliance_status = "Passing"
-    risk = db.query(models.Risk).filter(models.Risk.org_id == state, models.Risk.title.contains("Developer")).first()
-    if risk: 
-        risk.residual_score = 3
-        risk.status = "Mitigated"
 
+    integration.status = "Configured"
+    integration.last_sync = int(time.time())
+    vault_key = get_required_vault_key()
+    integration.credentials = security.encrypt_log(json.dumps({"token": token}), vault_key)
     db.commit()
     
     from fastapi.responses import RedirectResponse
