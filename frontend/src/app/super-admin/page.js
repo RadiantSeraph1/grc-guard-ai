@@ -135,6 +135,7 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only fetch by design
   }, []);
 
   const departments = useMemo(() => {
@@ -208,7 +209,7 @@ export default function SuperAdminPage() {
         <Metric icon={ShieldCheck} label="Controls" value={totals.controls} sub={`${totals.failing_controls} failing`} />
         <Metric icon={Plug} label="Integrations" value={totals.integrations} sub={`${totals.connected_integrations} connected`} />
         <Metric icon={Database} label="Evidence" value={totals.evidence} sub={`${totals.assets} assets`} />
-        <Metric icon={Bot} label="Active AI" value={security.active_ai_provider || "local"} sub={security.byok_configured ? "Vault ready" : "No vault"} />
+        <Metric icon={Bot} label="Active AI" value={security.active_ai_provider || "none"} sub={security.byok_configured ? "Vault ready" : "No vault"} />
         <Metric icon={KeyRound} label="Auth Mode" value={security.mock_auth_enabled ? "Mock" : "Live"} sub={security.clerk_configured ? "Clerk JWKS" : "Local"} />
       </div>
 

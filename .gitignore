@@ -5,7 +5,6 @@
 !.env*.example
 backend/.env
 frontend/.env.local
-agent-ui/.env.local
 
 # Dependencies
 node_modules/

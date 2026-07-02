@@ -1,13 +1,14 @@
 # GRC Auditor — Custom Model Training Plan
 
-Plan-only (no training code yet). Covers the three model tasks selected:
+Covers the three model tasks selected (Phase-1 training script exists:
+`backend/training/scripts/train_control_mapper.py`):
 **(1) control mapping**, **(2) compliance decision**, **(3) justification generation**.
 Each maps to a real seam in the existing codebase (`backend/rag.py`,
 `backend/main.py` `/api/scan`, `backend/ai_gateway.py`).
 
 > **Guiding principle:** don't fine-tune one big LLM to do everything. Train two
 > small, cheap, verifiable models (embeddings + classifier) where labels exist or
-> can be generated, and keep generation on a strong base model (Claude) + RAG.
+> can be generated, and keep generation on a strong base model (interim Groq) + RAG.
 
 ---
 
@@ -79,7 +80,7 @@ control(s). Replaces/augments the lexical+vector match in `rag.search_documents`
 - **Schema used:** `{anchor_text, positive_control_id, negatives:[control_id...]}`.
 - **Eval:** Recall@1/5, MRR on a held-out split **and** against our seeded
   controls (does it map a known-SOC2 snippet to the SOC2 control?).
-- **Integration:** swap the embedding model in `rag.py`; add
+- **Integration:** done — set `EMBEDDING_MODEL_PATH` to the trained artifact and `ai_gateway.embed_texts` serves it to all RAG search. Optionally add
   `POST /api/controls/classify` returning ranked control_ids + score.
 - **Compute:** MiniLM/bge-base fine-tunes on one T4/A10 in **hours**; CPU works but slow.
 
@@ -130,7 +131,7 @@ the decision step in `/api/scan`.
   - **Later:** DPO from real auditor 👍/👎 feedback.
 - **Eval:** rubric LLM-as-judge + human spot-check; **faithfulness** to retrieved
   evidence (no invented controls — matches the existing agent instructions).
-- **Integration:** add provider `local_finetuned` in `ai_gateway.py`.
+- **Integration:** the `inhouse` provider slot in `ai_gateway.py` is already live — serve the tuned model behind any OpenAI-compatible endpoint (vLLM) and set its base_url. The app needs zero code changes.
 - **Compute:** 7–8B QLoRA needs ~**24 GB** VRAM (A10/A100/3090/4090).
 
 ---

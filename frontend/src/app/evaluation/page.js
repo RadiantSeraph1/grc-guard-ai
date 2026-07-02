@@ -32,7 +32,7 @@ export default function EvaluationPage() {
   return (
     <PageContainer>
       <PageHeader
-        eyebrow="Chapter 4 Validation"
+        eyebrow="Model Evaluation"
         title="Benchmark Evaluation"
         description="Deterministic rule baseline scored on a held-out labelled set it was NOT tuned for. The held-out vs in-distribution gap is the honest generalization headroom."
         actions={<Button icon={RotateCw} loading={loading} onClick={fetchBenchmark}>Re-run</Button>}

@@ -1,21 +1,12 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { RotateCw, HelpCircle, Eye, ShieldAlert, Cpu, Clipboard } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
-  PageContainer, PageHeader, Card, CardHeader, Badge, Button,
+  PageContainer, PageHeader, Card, Badge, Button,
   Field, Input, Textarea, Select, cn,
 } from "../components/ui";
-
-const LIVE_SCAN_TRACE = [
-  { stage: "Input normalization", detail: "Preparing the submitted text and selected perspective." },
-  { stage: "Evidence retrieval", detail: "Searching the RAG corpus for matching regulations and uploaded evidence." },
-  { stage: "Control classification", detail: "Mapping the scenario to the most relevant banking control family." },
-  { stage: "Attribution scoring", detail: "Calculating the signal terms used in the XAI heatmap." },
-  { stage: "AI provider check", detail: "Using the configured provider or local evidence fallback for synthesis." },
-  { stage: "Auditor synthesis", detail: "Composing the verdict, reasoning summary, and remediation guidance." },
-];
 
 export default function ScannerPage() {
   const api = useApi();
@@ -23,40 +14,13 @@ export default function ScannerPage() {
   const [perspective, setPerspective] = useState("Standard");
   const [byokKey, setByokKey] = useState("");
   const [scanning, setScanning] = useState(false);
-  const [activeTraceStep, setActiveTraceStep] = useState(0);
-  const [visibleTrace, setVisibleTrace] = useState(LIVE_SCAN_TRACE);
   const [result, setResult] = useState(null);
-
-  // Keep history fetch for parity (sidebar/other surfaces refresh off the same logs).
-  const refreshHistory = useCallback(async () => {
-    try {
-      await api.get("/api/logs");
-    } catch {
-      /* non-blocking */
-    }
-  }, [api]);
-
-  useEffect(() => {
-    refreshHistory();
-  }, [refreshHistory]);
-
-  useEffect(() => {
-    if (!scanning) return undefined;
-    setVisibleTrace(LIVE_SCAN_TRACE);
-    setActiveTraceStep(0);
-    const interval = window.setInterval(() => {
-      setActiveTraceStep((step) => Math.min(step + 1, LIVE_SCAN_TRACE.length - 1));
-    }, 900);
-    return () => window.clearInterval(interval);
-  }, [scanning]);
 
   const handleScan = async (e) => {
     e.preventDefault();
     if (!scanText.trim()) return;
     setScanning(true);
     setResult(null);
-    setVisibleTrace(LIVE_SCAN_TRACE);
-    setActiveTraceStep(0);
     try {
       const data = await api.post("/api/scan", {
         text: scanText,
@@ -64,11 +28,6 @@ export default function ScannerPage() {
         byok_key: byokKey || null,
       });
       setResult(data);
-      if (data.reasoning_trace?.length) {
-        setVisibleTrace(data.reasoning_trace);
-        setActiveTraceStep(data.reasoning_trace.length);
-      }
-      refreshHistory();
     } catch {
       alert("Failed to scan. Backend offline.");
     } finally {
@@ -140,7 +99,10 @@ export default function ScannerPage() {
         {/* Results */}
         <div className="space-y-5">
           {scanning ? (
-            <ReasoningTraceCard trace={visibleTrace} activeStep={activeTraceStep} live />
+            <Card className="p-12 text-center flex flex-col items-center justify-center gap-3 h-full min-h-[350px]">
+              <RotateCw size={22} className="animate-spin text-zinc-500" />
+              <p className="text-xs text-zinc-500">Scanning against regulations and the evidence corpus…</p>
+            </Card>
           ) : result ? (
             <Card className="space-y-6 ui-fade-in">
               <div className="flex items-start justify-between">
@@ -151,11 +113,9 @@ export default function ScannerPage() {
                 <Badge variant={verdictVariant(result.decision)}>{result.decision}</Badge>
               </div>
 
-              <ReasoningTraceCard
-                trace={result.reasoning_trace || visibleTrace}
-                activeStep={(result.reasoning_trace || visibleTrace).length}
-                embedded
-              />
+              {result.reasoning_trace?.length > 0 && (
+                <ReasoningTraceCard trace={result.reasoning_trace} embedded />
+              )}
 
               {/* XAI heatmap */}
               <div className="space-y-2">
@@ -246,42 +206,26 @@ function ReportField({ label, text }) {
   );
 }
 
-function ReasoningTraceCard({ trace = LIVE_SCAN_TRACE, activeStep = 0, live = false, embedded = false }) {
-  const steps = trace.length ? trace : LIVE_SCAN_TRACE;
+// Renders the REAL reasoning_trace returned by /api/scan — the stages the
+// backend actually executed. No client-side simulated progress.
+function ReasoningTraceCard({ trace, embedded = false }) {
   return (
     <div className={cn("border rounded-xl space-y-5 ui-fade-in", embedded ? "bg-[#09090b] border-zinc-800 p-4" : "ui-card p-6")}>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <span className="text-zinc-500 text-xs font-semibold uppercase tracking-widest">Visible Analysis Trace</span>
-          <h3 className="font-semibold text-zinc-100 text-sm mt-1">
-            {live ? "Running Compliance Scan" : "Scan Reasoning Summary"}
-          </h3>
-        </div>
-        {live && <RotateCw size={16} className="animate-spin text-zinc-400 mt-1 shrink-0" />}
+      <div>
+        <span className="text-zinc-500 text-xs font-semibold uppercase tracking-widest">Analysis Trace</span>
+        <h3 className="font-semibold text-zinc-100 text-sm mt-1">Scan Reasoning Summary</h3>
       </div>
 
       <div className="space-y-3">
-        {steps.map((step, idx) => {
-          const completed = !live || idx < activeStep;
-          const active = live && idx === activeStep;
-          return (
-            <div
-              key={`${step.stage}-${idx}`}
-              className={cn(
-                "rounded-lg border p-3 transition-all",
-                active ? "border-indigo-500/50 bg-zinc-900/80" : completed ? "border-emerald-500/20 bg-emerald-500/5" : "border-zinc-800 bg-zinc-950/40"
-              )}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-semibold text-zinc-100">{step.stage}</span>
-                <span className={cn("text-xs uppercase tracking-wider font-bold", completed ? "text-emerald-400" : active ? "text-zinc-200" : "text-zinc-600")}>
-                  {completed ? "Done" : active ? "Running" : "Queued"}
-                </span>
-              </div>
-              <p className="text-xs text-zinc-500 leading-relaxed mt-1">{step.detail}</p>
+        {trace.map((step, idx) => (
+          <div key={`${step.stage}-${idx}`} className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold text-zinc-100">{step.stage}</span>
+              <span className="text-xs uppercase tracking-wider font-bold text-emerald-400">{step.status || "completed"}</span>
             </div>
-          );
-        })}
+            <p className="text-xs text-zinc-500 leading-relaxed mt-1">{step.detail}</p>
+          </div>
+        ))}
       </div>
 
       <p className="text-xs text-zinc-600 leading-relaxed border-t border-zinc-800 pt-3">

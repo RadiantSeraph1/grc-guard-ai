@@ -7,7 +7,6 @@ shared code or database between the two tiers.
 
 ## Stack
 - **FastAPI** (`main:app`) — the REST API on `:8001`
-- **agno** (`agent_os:app`) — optional AgentOS runtime on `:7777` for the agent UI
 - **SQLAlchemy** over SQLite (default) or Postgres (`DATABASE_URL`)
 - **Clerk** JWT verification (RS256 via JWKS)
 - Live connectors (AWS, GitHub, Okta, Auth0, Entra, GCP, Workspace, CrowdStrike,
@@ -23,11 +22,6 @@ cp .env.example .env          # then fill in real values
 python -m uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
 Health check: <http://localhost:8001/api/health>
-
-Optional agent runtime (for `agent-ui/`):
-```bash
-python -m uvicorn agent_os:app --host 0.0.0.0 --port 7777
-```
 
 ## Run with Docker
 ```bash

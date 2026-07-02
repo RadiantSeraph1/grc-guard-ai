@@ -33,6 +33,17 @@ Status: ⬜ todo · 🔧 in progress · ✅ done · ⏸ blocked on decision.
 | C3 | 🟡 | ~~Demo dataset loader~~ — **dropped by request**. Instead, ALL demo traces purged (`_demo_db_backup/` deleted, `demo_script` feature + UI removed, "demo" comments reworded, .gitignore line removed). App is demo-free. | repo-wide | ✅ (purged) |
 | C4 | 🔵 | Fixed: SQLite engine now uses **WAL + `busy_timeout=30s` + `synchronous=NORMAL`** (concurrent readers/writer, blocked writers wait not error); raw audit/RAG connections too; Postgres pool (`pool_pre_ping`) for the production path. | [database.py](backend/database.py), main.py, rag.py | ✅ |
 
+## E. Review round 2 (2026-06-28)
+
+| # | Sev | Issue | Status |
+|---|-----|-------|--------|
+| E1 | 🟠 | Docs described a removed product (ARB Apex, Simulation Lab, multi-vendor AI). PRD rewritten; UI_UX + RAG_PIPELINE + MODEL_TRAINING_PLAN aligned with reality. | ✅ |
+| E2 | 🟠 | No CI → [.github/workflows/ci.yml](.github/workflows/ci.yml): backend pytest + frontend eslint on every push. | ✅ |
+| E3 | 🟠 | No connector/RBAC tests → [test_security_matrix.py](backend/test_security_matrix.py): RBAC matrix, unauthenticated rejection, all 12 connectors refuse without creds, GitHub mocked-HTTP paths, sync→control-flip mechanism. Suite now 26 passing. | ✅ |
+| E4 | 🟡 | Flaky `test_framework_import` (shared-DB state) → clean-slate delete at test start. | ✅ |
+| E5 | 🟠 | Zero executed training → Phase-1 script [train_control_mapper.py](backend/training/scripts/train_control_mapper.py) (bi-encoder + Recall@k/MRR eval, pair-loader verified on 1,196 NIST controls) + local-model serving seam (`EMBEDDING_MODEL_PATH` in ai_gateway). Run it on a free T4 to produce the artifact. | ✅ code / ⬜ run |
+| E6 | 🔴 | A3 keys still not rotated. **Still yours.** | ⬜ |
+
 ## D. Architecture / separation
 
 | # | Sev | Issue | Status |

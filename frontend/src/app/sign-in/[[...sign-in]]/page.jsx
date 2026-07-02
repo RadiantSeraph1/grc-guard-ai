@@ -95,7 +95,7 @@ export default function SignInPage() {
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", color: C.tx }}>GRC Guard AI</div>
             <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: C.t3, fontFamily: "ui-monospace, monospace" }}>
-              Enterprise compliance
+              Compliance platform
             </div>
           </div>
         </div>

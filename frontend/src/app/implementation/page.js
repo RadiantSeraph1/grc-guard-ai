@@ -30,7 +30,7 @@ export default function ImplementationPage() {
   return (
     <PageContainer>
       <PageHeader
-        eyebrow="PDF Implementation Closure"
+        eyebrow="Project Status"
         title="Final Project Report"
         description="Implementation-readiness view mapping the app to the report aim: banking GRC automation with LLMs, explainability, BYOK, and live system evidence."
       />

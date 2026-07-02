@@ -3,7 +3,6 @@
 # Installs everything the app needs to run:
 #   1. Backend  - Python venv + pip install -r backend/requirements.txt
 #   2. Frontend - npm install (Next.js app)
-#   3. agno UI  - npm install (agent-ui chat client)
 #
 # Usage:  right-click -> "Run with PowerShell", or:  ./install-deps.ps1
 # After it finishes, start everything with:           ./start-dev.ps1
@@ -75,15 +74,6 @@ $feExit = $LASTEXITCODE
 Pop-Location
 if ($feExit -ne 0) { Write-Fail "Frontend npm install failed."; exit 1 }
 Write-Ok "Frontend dependencies installed"
-
-# ---- 3. agno UI (agent-ui) -------------------------------------------------
-Write-Step "agno UI: npm install"
-Push-Location (Join-Path $root "agent-ui")
-npm install --legacy-peer-deps
-$uiExit = $LASTEXITCODE
-Pop-Location
-if ($uiExit -ne 0) { Write-Fail "agent-ui npm install failed."; exit 1 }
-Write-Ok "agno UI dependencies installed"
 
 # ---- Done ------------------------------------------------------------------
 Write-Host "`nAll dependencies installed." -ForegroundColor Green

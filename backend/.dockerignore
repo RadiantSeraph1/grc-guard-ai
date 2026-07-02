@@ -13,3 +13,4 @@ temp_uploads/
 *.log
 *_stdout.txt
 *_stderr.txt
+training/

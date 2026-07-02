@@ -4,8 +4,8 @@ Every LLM call in the platform routes through here. The active provider is read
 from the per-organization AIProviderConfig table (configured in Settings or via
 environment variables). The target provider is the in-house trained GRC model
 ("inhouse"); Groq is the interim provider for testing until that model is ready.
-When no provider is usable the gateway degrades gracefully to a deterministic
-local evidence engine so the app keeps working offline.
+When no provider is usable the gateway returns an explicit "no model available"
+notice instead of fabricated output.
 
 Providers are constructed as agno model objects and executed with an agno Agent,
 giving the whole platform a single, consistent agent runtime.
@@ -52,10 +52,6 @@ PROVIDER_ENV_KEYS = {
     "inhouse": "INHOUSE_API_KEY",   # optional: self-hosted endpoints may need no key
 }
 
-# Auto-select preference when an environment key is present: prefer the in-house
-# model, fall back to Groq for now.
-ENV_PROVIDER_PREFERENCE = ["inhouse", "groq"]
-
 
 # ---------------------------------------------------------------------------
 # Key / config helpers
@@ -87,13 +83,6 @@ def get_decrypted_key(config: AIProviderConfig) -> Optional[str]:
     return decrypted
 
 
-def _first_env_provider() -> Optional[str]:
-    for provider_id in ENV_PROVIDER_PREFERENCE:
-        if get_env_provider_key(provider_id):
-            return provider_id
-    return None
-
-
 def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderConfig:
     """Resolve the active AI provider configuration, scoped to org.
 
@@ -113,7 +102,8 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
     # key (in-house first, then Groq). Returns None when nothing is configured —
     # callers then surface an honest "no model available" result rather than
     # fabricating output.
-    env_provider = _first_env_provider()
+    # ponytail: prefer inhouse, else groq; inline until groq is retired
+    env_provider = "inhouse" if get_env_provider_key("inhouse") else ("groq" if get_env_provider_key("groq") else None)
     if not env_provider:
         return None
     prov_config = db.query(AIProviderConfig).filter_by(id=env_provider, org_id=org_id).first()
@@ -133,20 +123,30 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
 # ---------------------------------------------------------------------------
 # Embeddings (for vector RAG)
 # ---------------------------------------------------------------------------
-# Embeddings are resolved independently of the chat provider: a deployment may
-# run Claude for chat (Anthropic has no embeddings API) while using OpenAI or
-# Gemini for vectors. Preference order is OpenAI -> Gemini, by available key.
-# Returns None when no embedding provider is configured, in which case the RAG
-# layer transparently falls back to lexical search.
+# Embeddings are resolved independently of the chat provider (neither Groq nor
+# the in-house chat model serves embeddings). Preferred backend: the local
+# fine-tuned control-mapping encoder (EMBEDDING_MODEL_PATH, Phase-1 artifact);
+# hosted OpenAI/Gemini keys are a vectors-only fallback. None configured -> the
+# RAG layer transparently falls back to lexical search.
 
 EMBEDDING_PROVIDERS = [
     ("openai", "OPENAI_API_KEY", "text-embedding-3-small", 1536),
     ("gemini", "GEMINI_API_KEY", "text-embedding-004", 768),
 ]
 
+# Cached local sentence-transformers model (loaded once per process).
+_local_embedder = None
+
 
 def get_embedding_config() -> Optional[dict]:
-    """Resolve the active embedding provider from available environment keys."""
+    """Resolve the active embedding backend.
+
+    Preference: a local fine-tuned sentence-transformers model (the Phase-1
+    control-mapping encoder, via EMBEDDING_MODEL_PATH) > hosted keys > None.
+    """
+    local_path = os.environ.get("EMBEDDING_MODEL_PATH", "").strip()
+    if local_path:
+        return {"provider": "local", "model": local_path, "api_key": None, "dim": None}
     for provider, env_name, model, dim in EMBEDDING_PROVIDERS:
         key = os.environ.get(env_name, "").strip()
         if key:
@@ -173,6 +173,13 @@ def embed_texts(texts: list, config: Optional[dict] = None) -> Optional[list]:
         return None
     provider = config["provider"]
     try:
+        if provider == "local":
+            # Fine-tuned sentence-transformers encoder (Phase-1 artifact).
+            global _local_embedder
+            if _local_embedder is None:
+                from sentence_transformers import SentenceTransformer
+                _local_embedder = SentenceTransformer(config["model"])
+            return [list(map(float, v)) for v in _local_embedder.encode(texts, normalize_embeddings=True)]
         if provider == "openai":
             from openai import OpenAI
             client = OpenAI(api_key=config["api_key"])
