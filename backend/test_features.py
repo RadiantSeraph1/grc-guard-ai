@@ -32,6 +32,10 @@ ORG = "bank_enterprise"
 # ---------------------------------------------------------------------------
 
 def test_framework_import_list_and_remove():
+    # Clean slate: a prior run (or another test) may have left soc-2 imported in
+    # the shared dev DB, which would make controls_created == 0 below.
+    client.delete("/api/frameworks/soc-2", headers=AUTH)
+
     # Library lists the catalog
     lib = client.get("/api/frameworks/library", headers=AUTH)
     assert lib.status_code == 200

@@ -6,7 +6,6 @@ import time
 import re
 import hmac
 import hashlib
-import base64
 import httpx
 from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, Form, Header, HTTPException, Query, BackgroundTasks
@@ -314,27 +313,19 @@ def filter_owned_by_department(query, model_cls, db: Session, org_id: str, depar
     return query
 
 def create_super_admin_session(subject: str) -> str:
-    expires_at = int(time.time()) + 8 * 60 * 60
-    payload = {"sub": subject, "role": "SuperAdmin", "exp": expires_at}
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode("utf-8").rstrip("=")
-    signature = hmac.new(SUPER_ADMIN_SESSION_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"{payload_b64}.{signature}"
+    import jwt
+    payload = {"sub": subject, "role": "SuperAdmin", "exp": int(time.time()) + 8 * 60 * 60}
+    return jwt.encode(payload, SUPER_ADMIN_SESSION_SECRET, algorithm="HS256")
 
 def verify_super_admin_session_token(token: Optional[str]) -> Optional[dict]:
-    if not token or "." not in token:
+    import jwt
+    if not token:
         return None
-    payload_b64, signature = token.split(".", 1)
-    expected = hmac.new(SUPER_ADMIN_SESSION_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
-        return None
-    padded = payload_b64 + "=" * (-len(payload_b64) % 4)
     try:
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
-    except Exception:
+        payload = jwt.decode(token, SUPER_ADMIN_SESSION_SECRET, algorithms=["HS256"])
+    except jwt.InvalidTokenError:
         return None
-    if payload.get("role") != "SuperAdmin" or int(payload.get("exp", 0)) < int(time.time()):
-        return None
-    return payload
+    return payload if payload.get("role") == "SuperAdmin" else None
 
 def get_optional_current_user(
     authorization: Optional[str] = Header(None),
@@ -481,9 +472,9 @@ def super_admin_overview(db: Session = Depends(database.get_db), current_user = 
     controls = db.query(models.Control).filter_by(org_id=org_id).all()
     risks = db.query(models.Risk).filter_by(org_id=org_id).all()
     integrations = db.query(models.Integration).filter_by(org_id=org_id).all()
-    policies = db.query(models.Policy).filter_by(org_id=org_id).all()
-    evidence = db.query(models.Evidence).filter_by(org_id=org_id).all()
-    assets = db.query(models.Asset).filter_by(org_id=org_id).all()
+    policy_count = db.query(models.Policy).filter_by(org_id=org_id).count()
+    evidence_count = db.query(models.Evidence).filter_by(org_id=org_id).count()
+    asset_count = db.query(models.Asset).filter_by(org_id=org_id).count()
     department_records = db.query(models.Department).filter_by(org_id=org_id).all()
     departments = sorted({department.name for department in department_records} | {user.department or "Unassigned" for user in users})
 
@@ -524,9 +515,9 @@ def super_admin_overview(db: Session = Depends(database.get_db), current_user = 
             "risks": len(risks),
             "integrations": len(integrations),
             "connected_integrations": len(connected_integrations),
-            "policies": len(policies),
-            "evidence": len(evidence),
-            "assets": len(assets),
+            "policies": policy_count,
+            "evidence": evidence_count,
+            "assets": asset_count,
             "failing_controls": len(failing_controls)
         },
         "security": {

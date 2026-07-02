@@ -10,7 +10,6 @@ their only contract is HTTP.
 │  - UI + Clerk sign-in   │ ◀──────────────────────────  │  - all business logic    │
 │  - thin API proxy route │                              │  - DB, auth, AI, audits  │
 └─────────────────────────┘                              └──────────────────────────┘
-        (optional)  agent-ui/ :3001  ──▶  AgentOS (agno)  backend/agent_os.py :7777
 ```
 
 ## Why the tiers are already cleanly separated
@@ -62,8 +61,3 @@ git pull ../GRC-AUDOTOR frontend-only
 After splitting, keep `docker-compose.yml` (and this file) in whichever repo
 orchestrates both, or in a small top-level `grc-deploy` repo that references the
 two service images.
-
-## `agent-ui/`
-`agent-ui/` is a **secondary, optional** dev UI (the upstream agno chat client)
-that talks to the AgentOS runtime on `:7777`. It is not one of the two core
-deployable services and can be ignored or removed without affecting the GRC app.

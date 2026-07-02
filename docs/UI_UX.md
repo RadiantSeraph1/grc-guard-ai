@@ -15,8 +15,8 @@
 - Identity tab: sync Clerk users, create local users, edit role/department/status/checks.
 - Departments tab: create departments and bulk move users.
 - Integrations tab: configure secrets, mark status, trigger sync.
-- AI Providers tab: configure provider, model, endpoint, key, and active provider.
-- Operations tab: simulation seed/run, operational signals, reset seed data.
+- AI Providers tab: configure the in-house model / interim Groq (endpoint, model, key) and set the active provider.
+- Operations tab: operational signals and reset tools (no simulation — removed).
 
 ## Responsive Rules
 - Tables must have horizontal scroll with stable minimum width.

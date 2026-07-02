@@ -94,42 +94,14 @@ def calculate_local_attribution(scan_text, matched_regulations):
     ]
 
 def generate_auditor_justification(decision, category, matched_text, attributions):
-    """
-    Generates a structured, auditor-ready justification document.
-    """
-    # Filter high importance words (attribution > 0.5)
-    high_impact_words = [a["word"] for a in attributions if a["attribution"] > 0.5]
-    impact_str = ", ".join(f"'{w}'" for w in high_impact_words[:5])
-    
-    if decision == "VIOLATION":
-        title = f"Compliance Alert: {category} Infraction Detected"
-        severity = "HIGH"
-        summary = (
-            f"The scanned sequence contains attributes that violate established GRC policies under {category}. "
-            f"Specifically, the terms {impact_str} were found to trigger compliance threshold alerts."
-        )
-        reasoning = (
-            f"Under the cited regulation: '{matched_text}', "
-            f"the system detected a misalignment. The logic was evaluated from the regulatory perspective, "
-            f"identifying that the active operational state fails to satisfy the specified control criteria. "
-            f"To satisfy auditor requirements, this alert is backed by an attribution mapping showing "
-            f"significant local model weight focused on security-critical configuration parameters."
-        )
-        remediation = "Please update configuration settings, restrict access, or mask the offending identifiers."
-    else:
-        title = f"Compliance Pass: {category} Verification"
-        severity = "NONE"
-        summary = f"The scanned sequence matches the compliant state profile defined by {category}."
-        reasoning = (
-            f"Evaluation against '{matched_text}' confirms that the parameter values fall within safe operational "
-            f"ranges. The key indicators {impact_str} were processed and verified as compliant."
-        )
-        remediation = "No action required. Compliance logs recorded."
-
+    """Structured justification for the scan result. Factual, no template padding —
+    the real rationale comes from the rule/LLM explanation prepended by the caller."""
+    top = ", ".join([a["word"] for a in attributions if a["attribution"] > 0.5][:5])
+    violation = decision == "VIOLATION"
     return {
-        "title": title,
-        "severity": severity,
-        "summary": summary,
-        "reasoning": reasoning,
-        "remediation": remediation
+        "title": f"Compliance {'Alert' if violation else 'Pass'}: {category}",
+        "severity": "HIGH" if violation else "NONE",
+        "summary": f"{'Violation indicators' if violation else 'Compliant indicators'}: {top or 'none above threshold'}.",
+        "reasoning": f"Evaluated against: '{matched_text}'.",
+        "remediation": "Remediate the flagged configuration or control gap." if violation else "No action required.",
     }

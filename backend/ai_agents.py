@@ -247,33 +247,21 @@ def _run(agent_id: str, prompt: str, org_id: str) -> str:
 
 
 def _extract_steps(result) -> list:
-    """Turn an agno RunOutput into a UI-friendly list of 'thinking' steps."""
+    """Turn an agno RunOutput (an object, not a dict) into UI 'thinking' steps."""
     steps = []
-
-    def _get(obj, key, default=None):
-        if isinstance(obj, dict):
-            return obj.get(key, default)
-        return getattr(obj, key, default)
-
-    reasoning = _get(result, "reasoning_content", None)
+    reasoning = getattr(result, "reasoning_content", None)
     if reasoning:
         steps.append({"type": "reasoning", "title": "Reasoning", "detail": str(reasoning)[:4000]})
-
-    for step in (_get(result, "reasoning_steps", None) or []):
-        title = _get(step, "title", "Reasoning step")
-        detail = _get(step, "reasoning", None) or _get(step, "action", None) or _get(step, "result", "")
-        steps.append({"type": "reasoning", "title": str(title), "detail": str(detail)[:2000]})
-
-    for tool in (_get(result, "tools", None) or []):
-        name = _get(tool, "tool_name", None) or _get(tool, "name", "tool")
-        args = _get(tool, "tool_args", None) or _get(tool, "args", {})
-        output = _get(tool, "result", None) or _get(tool, "content", "")
-        steps.append({
-            "type": "tool",
-            "title": f"Called {name}",
-            "args": args,
-            "detail": str(output)[:2000] if output else "",
-        })
+    for step in (getattr(result, "reasoning_steps", None) or []):
+        detail = getattr(step, "reasoning", None) or getattr(step, "action", None) or getattr(step, "result", "")
+        steps.append({"type": "reasoning", "title": str(getattr(step, "title", "Reasoning step")),
+                      "detail": str(detail)[:2000]})
+    for tool in (getattr(result, "tools", None) or []):
+        output = getattr(tool, "result", None) or getattr(tool, "content", "")
+        steps.append({"type": "tool",
+                      "title": f"Called {getattr(tool, 'tool_name', 'tool')}",
+                      "args": getattr(tool, "tool_args", {}),
+                      "detail": str(output)[:2000] if output else ""})
     return steps
 
 
