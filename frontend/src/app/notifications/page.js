@@ -21,6 +21,15 @@ const sevBorder = (sev) => ({
   info: "border-l-sky-500/50",
 }[sev] || "border-l-zinc-700");
 
+function fmtAgo(ts) {
+  if (!ts) return "";
+  const diff = Math.floor(Date.now() / 1000) - ts;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
 export default function NotificationsPage() {
   const { getToken } = useAuth();
   const [items, setItems] = useState([]);
@@ -61,15 +70,6 @@ export default function NotificationsPage() {
       setItems((prev) => prev.map((n) => ({ ...n, read: true })));
       setUnread(0);
     } catch (e) { console.error(e); }
-  };
-
-  const fmtAgo = (ts) => {
-    if (!ts) return "";
-    const diff = Math.floor(Date.now() / 1000) - ts;
-    if (diff < 60) return "just now";
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return `${Math.floor(diff / 86400)}d ago`;
   };
 
   return (

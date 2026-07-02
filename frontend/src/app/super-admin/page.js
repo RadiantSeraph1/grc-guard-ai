@@ -135,6 +135,7 @@ export default function SuperAdminPage() {
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only fetch by design
   }, []);
 
   const departments = useMemo(() => {

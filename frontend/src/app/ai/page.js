@@ -21,7 +21,7 @@ const initials = (name = "") => name.split(/\s+/).filter(Boolean).map((w) => w[0
 const agentById = (id) => AGENTS.find((a) => a.id === id) || AGENTS[0];
 const STORAGE_PREFIX = "grc_ai_chats:";
 
-function newSession(agentId = "compliance_agent", createdAt = 0) {
+function newSession(agentId = "compliance_agent", createdAt = Date.now()) {
   const id = `chat_${createdAt || ""}_${Math.round((createdAt || 1) * 1000) % 100000}`;
   return {
     id,
@@ -54,7 +54,7 @@ export default function AiPage() {
       if (raw) loaded = JSON.parse(raw);
     } catch { loaded = []; }
     if (!Array.isArray(loaded) || loaded.length === 0) {
-      loaded = [newSession("compliance_agent", Date.now())];
+      loaded = [newSession("compliance_agent")];
     }
     setSessions(loaded);
     setActiveId(loaded[0].id);
@@ -74,7 +74,7 @@ export default function AiPage() {
 
   // ---- actions -----------------------------------------------------------
   const createChat = () => {
-    const s = newSession(active?.agent || "compliance_agent", Date.now());
+    const s = newSession(active?.agent || "compliance_agent");
     setSessions((prev) => [s, ...prev]);
     setActiveId(s.id);
     setView("chat");
@@ -84,7 +84,7 @@ export default function AiPage() {
     setSessions((prev) => {
       const next = prev.filter((s) => s.id !== id);
       if (next.length === 0) {
-        const fresh = newSession("compliance_agent", Date.now());
+        const fresh = newSession("compliance_agent");
         setActiveId(fresh.id);
         return [fresh];
       }

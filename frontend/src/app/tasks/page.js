@@ -26,6 +26,8 @@ async function fetchJsonOrThrow(url, options) {
   return data;
 }
 
+const isOverdue = (t) => t.due_date && t.status !== "Done" && t.due_date * 1000 < Date.now();
+
 export default function TasksPage() {
   const { getToken } = useAuth();
   const [tasks, setTasks] = useState([]);
@@ -107,7 +109,6 @@ export default function TasksPage() {
 
   const nextStatus = (s) => COLUMNS[Math.min(COLUMNS.indexOf(s) + 1, COLUMNS.length - 1)];
   const fmtDue = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString() : null);
-  const isOverdue = (t) => t.due_date && t.status !== "Done" && t.due_date * 1000 < Date.now();
 
   return (
     <div className="p-6 sm:p-8 max-w-7xl mx-auto space-y-6 pb-24">
