@@ -193,6 +193,10 @@ class OktaClient:
                             "reason": f"MFA compliance breach: {len(unprotected_users)} users have no active MFA factors enrolled.",
                             "details": {"unprotected_users": unprotected_users}
                         }
+                    if not users:
+                        return {"compliant": False,
+                                "reason": "Okta returned 0 users; nothing to audit (check API token scope).",
+                                "details": {"total_users": 0}}
                     return {
                         "compliant": True,
                         "reason": f"All {len(users)} users have active MFA factors enrolled in Okta.",
@@ -384,6 +388,10 @@ class Auth0Client:
                             "unenrolled_users": unenrolled_users
                         }
                     }
+                if not users:
+                    return {"compliant": False,
+                            "reason": "Auth0 returned 0 users; nothing to audit (check M2M app scopes).",
+                            "details": {"total_users": 0}}
                 return {
                     "compliant": True,
                     "reason": f"All {len(users)} users have active MFA enrollment in Auth0.",
@@ -664,7 +672,7 @@ class EntraClient:
                                   ("#microsoft.graph.passwordAuthenticationMethod",)]
                         if not strong:
                             unprotected.append(u.get("userPrincipalName"))
-                compliant = len(unprotected) == 0
+                compliant = len(users) > 0 and len(unprotected) == 0
                 return {
                     "compliant": compliant,
                     "reason": (
@@ -735,7 +743,7 @@ class GoogleWorkspaceClient:
                         break
                 not_enrolled = [u.get("primaryEmail") for u in users
                                 if not u.get("isEnrolledIn2Sv") and not u.get("suspended")]
-                compliant = len(not_enrolled) == 0
+                compliant = len(users) > 0 and len(not_enrolled) == 0
                 return {
                     "compliant": compliant,
                     "reason": (

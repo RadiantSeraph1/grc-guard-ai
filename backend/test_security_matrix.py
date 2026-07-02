@@ -130,6 +130,21 @@ def test_github_branch_protection_paths(monkeypatch):
     print("SUCCESS: GitHub connector compliant/non-compliant paths verified.")
 
 
+def test_empty_directory_is_not_compliant(monkeypatch):
+    """Vacuous-truth guard: an identity provider returning 0 users must NOT
+    produce a green MFA/2SV check (found via live Auth0 test on an empty tenant)."""
+    empty_users = _FakeResponse(200, [])
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({"/api/v1/users": empty_users}))
+    okta = ic.OktaClient(org_url="https://x.okta.com", token="t").audit_mfa_enrollment()
+    assert okta["compliant"] is False and "0 users" in okta["reason"]
+
+    monkeypatch.setattr(ic.Auth0Client, "_get_access_token", lambda self: "t")
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({"/api/v2/users": empty_users}))
+    auth0 = ic.Auth0Client(domain="x.auth0.com", client_id="i", client_secret="s").audit_mfa_enrollment()
+    assert auth0["compliant"] is False and "0 users" in auth0["reason"]
+    print("SUCCESS: empty identity directories do not read as compliant.")
+
+
 def test_sync_flips_mapped_controls():
     """The thesis mechanism: a connector result flips imported framework controls."""
     import database, models, framework_library
