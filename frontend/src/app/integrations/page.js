@@ -7,26 +7,26 @@ import {
 import { useApi, ApiError } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState,
-  Modal, Field, Textarea, cn,
+  Modal, Field, Input, Textarea, cn,
 } from "../components/ui";
 
 // Per-connector presentation + credential hints. Connectors themselves come from
 // the backend catalog (/api/integrations); this only drives icons/help text.
 const CONNECTOR_META = {
-  aws: { desc: "Audits S3 bucket encryption and storage security configuration.", label: "AWS Access Credentials", ph: '{"aws_access_key_id":"...","aws_secret_access_key":"...","bucket_name":"..."}' },
-  gcp: { desc: "Audits GCS bucket encryption and public-access prevention.", label: "GCP Service Account JSON", ph: '{"service_account_json":"{...}","bucket_name":"my-bucket","project_id":"my-proj"}' },
-  azure: { desc: "Audits Storage Account secure-transfer and encryption settings.", label: "Azure Service Principal", ph: '{"tenant_id":"...","client_id":"...","client_secret":"...","subscription_id":"...","resource_group":"...","account_name":"..."}' },
-  okta: { desc: "Retrieves user rosters and verifies MFA factor enrollment.", label: "Okta API Token / Org URL", ph: '{"org_url":"https://dev-xxxxx.okta.com","token":"..."}' },
-  auth0: { desc: "Audits directory users, MFA Guardian enrollment, login logs, and roles.", label: "Auth0 M2M Credentials", ph: '{"domain":"your-tenant.us.auth0.com","client_id":"...","client_secret":"..."}' },
-  entra: { desc: "Audits Entra ID users and MFA via Microsoft Graph.", label: "Entra (Graph) App Registration", ph: '{"tenant_id":"...","client_id":"...","client_secret":"..."}' },
-  google_workspace: { desc: "Audits Workspace users and 2-Step Verification enrollment.", label: "Workspace Service Account", ph: '{"service_account_json":"{...}","admin_email":"admin@yourco.com"}' },
-  github: { desc: "Evaluates branch protection and pull request review rules.", label: "GitHub Personal Access Token", ph: '{"token":"ghp_...","owner":"your-org","repo":"your-repo","branch":"main"}' },
-  snyk: { desc: "Audits open critical/high vulnerabilities across monitored projects.", label: "Snyk API Token + Org", ph: '{"token":"...","org_id":"..."}' },
-  crowdstrike: { desc: "Audits endpoint sensor coverage and detection posture.", label: "CrowdStrike API Client", ph: '{"client_id":"...","client_secret":"...","base_url":"https://api.crowdstrike.com"}' },
-  jamf: { desc: "Validates managed Mac enrollment and FileVault disk encryption.", label: "Jamf Pro API Client", ph: '{"base_url":"https://yourorg.jamfcloud.com","client_id":"...","client_secret":"..."}' },
-  workday: { desc: "Syncs active worker roster via a RaaS report endpoint.", label: "Workday RaaS Report", ph: '{"report_url":"https://...","username":"ISU","password":"..."}' },
+  aws: "Audits S3 bucket encryption and storage security configuration.",
+  gcp: "Audits GCS bucket encryption and public-access prevention.",
+  azure: "Audits Storage Account secure-transfer and encryption settings.",
+  okta: "Retrieves user rosters and verifies MFA factor enrollment.",
+  auth0: "Audits directory users, MFA Guardian enrollment, login logs, and roles.",
+  entra: "Audits Entra ID users and MFA via Microsoft Graph.",
+  google_workspace: "Audits Workspace users and 2-Step Verification enrollment.",
+  github: "Audits repo security posture: branch protection, Dependabot alerts, secret scanning, visibility.",
+  snyk: "Audits open critical/high vulnerabilities across monitored projects.",
+  crowdstrike: "Audits endpoint sensor coverage and detection posture.",
+  jamf: "Validates managed Mac enrollment and FileVault disk encryption.",
+  workday: "Syncs active worker roster via a RaaS report endpoint.",
 };
-const metaFor = (id) => CONNECTOR_META[id] || { desc: "Connect this system to pull live compliance evidence.", label: "API Credentials (JSON)", ph: '{"...":"..."}' };
+const descFor = (id) => CONNECTOR_META[id] || "Connect this system to pull live compliance evidence.";
 
 const CATEGORY_ICON = {
   CLOUD: <Cloud size={14} />,
@@ -45,7 +45,8 @@ export default function IntegrationsPage() {
   const [loading, setLoading] = useState(true);
   const [syncLogs, setSyncLogs] = useState(null);
   const [activeIntegration, setActiveIntegration] = useState(null);
-  const [credentials, setCredentials] = useState("");
+  const [credValues, setCredValues] = useState({});
+  const [fieldsMap, setFieldsMap] = useState({});
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
   const [connectionMode, setConnectionMode] = useState("api");
@@ -54,6 +55,7 @@ export default function IntegrationsPage() {
     try {
       const data = await api.get("/api/integrations");
       setIntegrations(Array.isArray(data) ? data : []);
+      try { setFieldsMap(await api.get("/api/integrations/fields")); } catch { /* form falls back to a generic token field */ }
     } catch {
       setIntegrations([]);
     } finally {
@@ -89,17 +91,26 @@ export default function IntegrationsPage() {
       return;
     }
 
-    const apiCreds = credentials.trim();
-    if (!apiCreds) {
+    const spec = fieldsMap[activeIntegration.id] || [];
+    const payload = {};
+    for (const f of spec) {
+      const v = (credValues[f.key] || "").trim();
+      if (v) payload[f.key] = v;
+      else if (f.required !== false) {
+        alert(`"${f.label}" is required.`);
+        return;
+      }
+    }
+    if (Object.keys(payload).length === 0) {
       alert("Enter real read-only credentials before connecting this system.");
       return;
     }
 
     setConnecting(true);
     try {
-      await api.post("/api/integrations/connect", { id: activeIntegration.id, credentials: apiCreds });
+      await api.post("/api/integrations/connect", { id: activeIntegration.id, credentials: JSON.stringify(payload) });
       setActiveIntegration(null);
-      setCredentials("");
+      setCredValues({});
       await fetchIntegrations();
     } catch (err) {
       alert(`Failed to connect integration: ${err instanceof ApiError ? err.message : err}`);
@@ -170,7 +181,6 @@ export default function IntegrationsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {filtered.map((item) => {
-            const meta = metaFor(item.id);
             const connected = item.status === "Connected" || item.status === "Configured";
             return (
               <Card key={item.id} hover className="flex flex-col justify-between gap-5">
@@ -190,7 +200,7 @@ export default function IntegrationsPage() {
                   <Badge variant={statusVariantFor(item.status)}>{item.status}</Badge>
                 </div>
 
-                <p className="text-sm text-zinc-400 leading-relaxed min-h-[40px]">{meta.desc}</p>
+                <p className="text-sm text-zinc-400 leading-relaxed min-h-[40px]">{descFor(item.id)}</p>
 
                 <div className="flex items-center justify-between pt-4 border-t border-zinc-800/60 text-xs">
                   <span className="text-zinc-500">
@@ -268,19 +278,33 @@ export default function IntegrationsPage() {
 
             <form onSubmit={handleConnect} className="space-y-4">
               {connectionMode === "api" ? (
-                <Field label={metaFor(activeIntegration.id).label}>
-                  <Textarea
-                    value={credentials}
-                    onChange={(e) => setCredentials(e.target.value)}
-                    placeholder={metaFor(activeIntegration.id).ph}
-                    rows={4}
-                    className="font-mono resize-none"
-                  />
-                  <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/5 p-3 rounded-lg border border-amber-500/15 mt-2">
+                <div className="space-y-3">
+                  {(fieldsMap[activeIntegration.id] || [{ key: "token", label: "API token", secret: true }]).map((f) => (
+                    <Field key={f.key} label={f.label + (f.required === false ? " (optional)" : "")}>
+                      {f.multiline ? (
+                        <Textarea
+                          value={credValues[f.key] || ""}
+                          onChange={(e) => setCredValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder || ""}
+                          rows={4}
+                          className="font-mono resize-none"
+                        />
+                      ) : (
+                        <Input
+                          type={f.secret ? "password" : "text"}
+                          value={credValues[f.key] || ""}
+                          onChange={(e) => setCredValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                          placeholder={f.placeholder || ""}
+                          className="font-mono"
+                        />
+                      )}
+                    </Field>
+                  ))}
+                  <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/5 p-3 rounded-lg border border-amber-500/15">
                     <ShieldAlert size={14} className="shrink-0 text-amber-400 mt-0.5" />
                     <span>Credentials are encrypted with the server BYOK vault. Use read-only audit scopes only.</span>
                   </div>
-                </Field>
+                </div>
               ) : (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-400 space-y-2">
                   <div className="flex items-center gap-2 font-semibold text-zinc-200">

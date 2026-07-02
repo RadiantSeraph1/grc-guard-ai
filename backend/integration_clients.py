@@ -95,6 +95,73 @@ class GitHubClient:
     def __init__(self, token: Optional[str] = None):
         self.token = token or os.environ.get("GITHUB_TOKEN")
 
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def audit_repo_posture(self, owner: str, repo: str, branch: str = "main") -> dict:
+        """Multi-check repository security posture audit.
+
+        Checks: repo reachability (disambiguates 404 = not-found/bad-token from
+        404 = protection-off), branch protection, Dependabot vulnerability
+        alerts, and secret scanning (when the token can see it). Verdict:
+        compliant when branch protection AND Dependabot alerts are on; secret
+        scanning and visibility are reported but only fail the audit when
+        explicitly disabled on a private repo.
+        """
+        if not self.token:
+            return {"compliant": False, "reason": "GitHub API token not configured. Please supply a token.", "details": {}}
+        if not owner or not repo:
+            return {"compliant": False, "reason": "GitHub owner/repo not configured.", "details": {}}
+        base = f"https://api.github.com/repos/{owner}/{repo}"
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                repo_res = client.get(base, headers=self._headers())
+                if repo_res.status_code == 404:
+                    return {"compliant": False,
+                            "reason": f"Repository {owner}/{repo} not found or the token lacks access.",
+                            "details": {}}
+                if repo_res.status_code != 200:
+                    return {"compliant": False,
+                            "reason": f"GitHub returned {repo_res.status_code} for {owner}/{repo}.",
+                            "details": {}}
+                repo_data = repo_res.json()
+                private = bool(repo_data.get("private"))
+                sec = repo_data.get("security_and_analysis") or {}
+                secret_scanning = (sec.get("secret_scanning") or {}).get("status")  # enabled/disabled/None
+
+                # Repo confirmed reachable, so a 404 here is unambiguous: protection off.
+                prot = client.get(f"{base}/branches/{branch}/protection", headers=self._headers())
+                protection_on = prot.status_code == 200
+                min_reviews = 0
+                if protection_on:
+                    min_reviews = (prot.json().get("required_pull_request_reviews") or {}).get("required_approving_review_count", 0)
+
+                # 204 = alerts enabled, 404 = disabled.
+                alerts = client.get(f"{base}/vulnerability-alerts", headers=self._headers())
+                alerts_on = alerts.status_code == 204
+
+                checks = [
+                    f"branch protection on '{branch}': {'ON (min reviews ' + str(min_reviews) + ')' if protection_on else 'OFF'}",
+                    f"Dependabot alerts: {'ON' if alerts_on else 'OFF'}",
+                    f"secret scanning: {secret_scanning or 'not visible to this token'}",
+                    f"visibility: {'private' if private else 'public'}",
+                ]
+                compliant = protection_on and alerts_on and secret_scanning != "disabled"
+                passed = sum([protection_on, alerts_on, secret_scanning == "enabled"])
+                return {
+                    "compliant": compliant,
+                    "reason": f"GitHub posture {passed}/3 hardening checks passed - " + "; ".join(checks),
+                    "details": {"private": private, "branch_protection": protection_on,
+                                "min_reviews": min_reviews, "dependabot_alerts": alerts_on,
+                                "secret_scanning": secret_scanning},
+                }
+        except Exception as e:
+            return {"compliant": False, "reason": f"GitHub API request failed: {str(e)}", "details": {}}
+
     def audit_branch_protection(self, owner: str, repo: str, branch: str = "main") -> dict:
         """Query GitHub API to verify branch protection rules are active."""
         if not self.token:
@@ -952,3 +1019,137 @@ class WorkdayClient:
                 }
         except Exception as e:
             return _missing(f"Workday audit failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Credential field specs + sync handler registry
+# ---------------------------------------------------------------------------
+# CONNECTOR_FIELDS drives the frontend connect form (one input per field, no
+# raw JSON blob). The submitted values arrive as a JSON object of {key: value},
+# which each SYNC_HANDLERS entry consumes. Adding a connector = one catalog
+# row, one client class, one fields list, one handler line.
+
+CONNECTOR_FIELDS: Dict[str, List[Dict[str, Any]]] = {
+    "aws": [
+        {"key": "aws_access_key_id", "label": "Access key ID", "secret": False},
+        {"key": "aws_secret_access_key", "label": "Secret access key", "secret": True},
+        {"key": "bucket_name", "label": "S3 bucket to audit", "secret": False},
+    ],
+    "gcp": [
+        {"key": "service_account_json", "label": "Service account JSON", "secret": True, "multiline": True},
+        {"key": "bucket_name", "label": "GCS bucket to audit", "secret": False},
+        {"key": "project_id", "label": "Project ID", "secret": False, "required": False},
+    ],
+    "azure": [
+        {"key": "tenant_id", "label": "Tenant ID", "secret": False},
+        {"key": "client_id", "label": "Client ID", "secret": False},
+        {"key": "client_secret", "label": "Client secret", "secret": True},
+        {"key": "subscription_id", "label": "Subscription ID", "secret": False},
+        {"key": "resource_group", "label": "Resource group", "secret": False},
+        {"key": "account_name", "label": "Storage account name", "secret": False},
+    ],
+    "okta": [
+        {"key": "org_url", "label": "Org URL (https://x.okta.com)", "secret": False},
+        {"key": "token", "label": "API token", "secret": True},
+    ],
+    "auth0": [
+        {"key": "domain", "label": "Tenant domain", "secret": False},
+        {"key": "client_id", "label": "M2M client ID", "secret": False},
+        {"key": "client_secret", "label": "M2M client secret", "secret": True},
+    ],
+    "entra": [
+        {"key": "tenant_id", "label": "Tenant ID", "secret": False},
+        {"key": "client_id", "label": "App (client) ID", "secret": False},
+        {"key": "client_secret", "label": "Client secret", "secret": True},
+    ],
+    "google_workspace": [
+        {"key": "service_account_json", "label": "Service account JSON (domain-wide delegation)", "secret": True, "multiline": True},
+        {"key": "admin_email", "label": "Admin email to impersonate", "secret": False},
+    ],
+    "github": [
+        {"key": "token", "label": "Personal access token", "secret": True},
+        {"key": "owner", "label": "Owner / org", "secret": False},
+        {"key": "repo", "label": "Repository", "secret": False},
+        {"key": "branch", "label": "Branch", "secret": False, "required": False, "placeholder": "main"},
+    ],
+    "snyk": [
+        {"key": "token", "label": "API token", "secret": True},
+        {"key": "org_id", "label": "Organization ID", "secret": False},
+    ],
+    "crowdstrike": [
+        {"key": "client_id", "label": "API client ID", "secret": False},
+        {"key": "client_secret", "label": "API client secret", "secret": True},
+        {"key": "base_url", "label": "Cloud base URL", "secret": False, "required": False, "placeholder": "https://api.crowdstrike.com"},
+    ],
+    "jamf": [
+        {"key": "base_url", "label": "Jamf Pro URL", "secret": False, "placeholder": "https://yourorg.jamfcloud.com"},
+        {"key": "client_id", "label": "API client ID", "secret": False},
+        {"key": "client_secret", "label": "API client secret", "secret": True},
+    ],
+    "workday": [
+        {"key": "report_url", "label": "RaaS report URL (JSON)", "secret": False},
+        {"key": "username", "label": "ISU username", "secret": False},
+        {"key": "password", "label": "ISU password", "secret": True},
+    ],
+}
+
+
+def _first(creds: dict, *keys, part: int = None, default=None):
+    """Credential lookup with legacy colon-separated 'parts' fallback."""
+    for key in keys:
+        if creds.get(key):
+            return creds[key]
+    parts = creds.get("parts", [])
+    if part is not None and len(parts) > part:
+        return parts[part]
+    return default
+
+
+def _sync_aws(creds: dict) -> dict:
+    client = AWSClient(_first(creds, "aws_access_key_id", "access_key", part=0),
+                       _first(creds, "aws_secret_access_key", "secret_key", part=1))
+    return client.audit_s3_encryption(_first(creds, "bucket_name", "bucket", part=2,
+                                             default=os.environ.get("AWS_AUDIT_BUCKET", "")))
+
+
+def _sync_github(creds: dict) -> dict:
+    client = GitHubClient(_first(creds, "token", "github_token", part=0))
+    return client.audit_repo_posture(
+        _first(creds, "owner", part=1, default=os.environ.get("GITHUB_OWNER", "")),
+        _first(creds, "repo", part=2, default=os.environ.get("GITHUB_REPO", "")),
+        _first(creds, "branch", part=3, default="main"),
+    )
+
+
+def _sync_okta(creds: dict) -> dict:
+    return OktaClient(_first(creds, "org_url", "okta_org_url", part=0),
+                      _first(creds, "token", "okta_api_token", part=1)).audit_mfa_enrollment()
+
+
+def _sync_auth0(creds: dict) -> dict:
+    return Auth0Client(creds.get("domain"), creds.get("client_id"),
+                       creds.get("client_secret")).audit_mfa_enrollment()
+
+
+SYNC_HANDLERS = {
+    "aws": _sync_aws,
+    "github": _sync_github,
+    "okta": _sync_okta,
+    "auth0": _sync_auth0,
+    "gcp": lambda c: GCPClient(c.get("service_account_json"), c.get("project_id"))
+        .audit_bucket_encryption(c.get("bucket_name") or os.environ.get("GCP_AUDIT_BUCKET", "")),
+    "azure": lambda c: AzureClient(c.get("tenant_id"), c.get("client_id"), c.get("client_secret"),
+                                   c.get("subscription_id"), c.get("resource_group"),
+                                   c.get("account_name")).audit_storage_account(),
+    "entra": lambda c: EntraClient(c.get("tenant_id"), c.get("client_id"),
+                                   c.get("client_secret")).audit_mfa_enrollment(),
+    "google_workspace": lambda c: GoogleWorkspaceClient(c.get("service_account_json"), c.get("admin_email"),
+                                                        c.get("customer", "my_customer")).audit_2sv_enrollment(),
+    "crowdstrike": lambda c: CrowdStrikeClient(c.get("client_id"), c.get("client_secret"),
+                                               c.get("base_url")).audit_sensor_coverage(),
+    "snyk": lambda c: SnykClient(c.get("token"), c.get("org_id")).audit_vulnerabilities(),
+    "jamf": lambda c: JamfClient(c.get("base_url"), c.get("client_id"), c.get("client_secret"),
+                                 c.get("username"), c.get("password")).audit_disk_encryption(),
+    "workday": lambda c: WorkdayClient(c.get("report_url"), c.get("username"),
+                                       c.get("password")).audit_worker_roster(),
+}

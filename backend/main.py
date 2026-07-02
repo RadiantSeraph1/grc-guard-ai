@@ -1858,198 +1858,59 @@ def connect_integration(request: IntegrationConnectRequest, db: Session = Depend
     return {"status": "success", "integration_status": integration.status}
 
 def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
+    """Run one connector audit and propagate the result.
+
+    Dispatch is a registry lookup (integration_clients.SYNC_HANDLERS); every
+    connector then flows through the same post-processing: integration status +
+    audit summary, linked-asset status, and the connector->control bridge that
+    flips imported framework controls and records drift.
+    """
     import integration_clients
     db = database.SessionLocal()
     try:
         integration = db.query(models.Integration).filter_by(id=integration_id, org_id=org_id).first()
         if not integration:
             return
-            
+
         integration.last_sync = int(time.time())
         vault_key = ai_gateway.get_vault_key()
-        
-        # Get decrypted credentials
         creds_str = ""
         if integration.credentials and vault_key:
             creds_str = security.decrypt_log(integration.credentials, vault_key)
-            
-        compliant = True
-        reason = "Sync completed."
         creds = parse_integration_credentials(creds_str)
 
-        if integration_id == "aws":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                access_key = creds.get("aws_access_key_id") or creds.get("access_key") or (parts[0] if len(parts) > 0 else None)
-                secret_key = creds.get("aws_secret_access_key") or creds.get("secret_key") or (parts[1] if len(parts) > 1 else None)
-                bucket_name = creds.get("bucket_name") or creds.get("bucket") or (parts[2] if len(parts) > 2 else None)
-                
-                client = integration_clients.AWSClient(access_key, secret_key)
-                res = client.audit_s3_encryption(bucket_name or os.environ.get("AWS_AUDIT_BUCKET", "grc-audit-bucket"))
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "AWS audit completed.")
-            else:
-                compliant = False
-                reason = "AWS credentials missing. Provide read-only access key, secret key, and bucket_name."
-                
-            control = db.query(models.Control).filter_by(control_code="GDPR-PII-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Failing"
-                control.last_tested = int(time.time())
-            asset = db.query(models.Asset).filter_by(integration_id="aws", org_id=org_id).first()
-            if asset: 
-                asset.compliance_status = "Passing" if compliant else "Failing"
-            risk = db.query(models.Risk).filter(models.Risk.org_id == org_id, models.Risk.title.contains("Database")).first()
-            if risk: 
-                risk.residual_score = 4 if compliant else 20
-                risk.status = "Mitigated" if compliant else "Open"
-                
-        elif integration_id == "github":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                token = creds.get("token") or creds.get("github_token") or (parts[0] if len(parts) > 0 else None)
-                owner = creds.get("owner") or (parts[1] if len(parts) > 1 else None)
-                repo = creds.get("repo") or (parts[2] if len(parts) > 2 else None)
-                branch = creds.get("branch") or (parts[3] if len(parts) > 3 else "main")
-                
-                client = integration_clients.GitHubClient(token)
-                res = client.audit_branch_protection(owner or os.environ.get("GITHUB_OWNER", ""), repo or os.environ.get("GITHUB_REPO", ""), branch)
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "GitHub audit completed.")
-            else:
-                compliant = False
-                reason = "GitHub credentials missing. Provide token, owner, repo, and branch."
-                
-            control = db.query(models.Control).filter_by(control_code="GIT-BR-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Failing"
-                control.last_tested = int(time.time())
-            asset = db.query(models.Asset).filter_by(integration_id="github", org_id=org_id).first()
-            if asset: 
-                asset.compliance_status = "Passing" if compliant else "Failing"
-            risk = db.query(models.Risk).filter(models.Risk.org_id == org_id, models.Risk.title.contains("Developer")).first()
-            if risk: 
-                risk.residual_score = 3 if compliant else 12
-                risk.status = "Mitigated" if compliant else "Open"
-                
-        elif integration_id == "okta":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                org_url = creds.get("org_url") or creds.get("okta_org_url") or (parts[0] if len(parts) > 0 else None)
-                token = creds.get("token") or creds.get("okta_api_token") or (parts[1] if len(parts) > 1 else None)
-                
-                client = integration_clients.OktaClient(org_url, token)
-                res = client.audit_mfa_enrollment()
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "Okta audit completed.")
-            else:
-                compliant = False
-                reason = "Okta credentials missing. Provide org_url and token."
-                
-            control = db.query(models.Control).filter_by(control_code="SOC2-MFA-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Warning"
-                control.last_tested = int(time.time())
-                
-        elif integration_id == "auth0":
-            creds = parse_integration_credentials(creds_str)
-            domain = creds.get("domain") or os.environ.get("AUTH0_DOMAIN")
-            client_id = creds.get("client_id") or os.environ.get("AUTH0_CLIENT_ID")
-            client_secret = creds.get("client_secret") or os.environ.get("AUTH0_CLIENT_SECRET")
-            
-            if domain and client_id and client_secret:
-                client = integration_clients.Auth0Client(domain, client_id, client_secret)
-                
-                # Audit users
-                user_res = client.audit_users()
-                user_count = user_res.get("details", {}).get("total_users", 0)
-                
-                # Audit MFA enrollment
-                mfa_res = client.audit_mfa_enrollment()
-                compliant = mfa_res.get("compliant", False)
-                reason = mfa_res.get("reason", "Auth0 MFA audit completed.")
-                
-                # Update MFA control status based on Auth0 audit
-                control = db.query(models.Control).filter(
-                    models.Control.control_code == "SOC2-MFA-01",
-                    models.Control.org_id == org_id
-                ).first()
-                if control:
-                    control.status = "Passing" if compliant else "Warning"
-                    control.last_tested = int(time.time())
-            else:
-                compliant = False
-                reason = "Auth0 credentials not configured in .env file. Set AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET."
-
-        elif integration_id == "gcp":
-            client = integration_clients.GCPClient(creds.get("service_account_json"), creds.get("project_id"))
-            res = client.audit_bucket_encryption(creds.get("bucket_name") or os.environ.get("GCP_AUDIT_BUCKET", ""))
-            compliant, reason = res.get("compliant", False), res.get("reason", "GCP audit completed.")
-
-        elif integration_id == "azure":
-            client = integration_clients.AzureClient(
-                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"),
-                creds.get("subscription_id"), creds.get("resource_group"), creds.get("account_name"))
-            res = client.audit_storage_account()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Azure audit completed.")
-
-        elif integration_id == "entra":
-            client = integration_clients.EntraClient(
-                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"))
-            res = client.audit_mfa_enrollment()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Entra audit completed.")
-
-        elif integration_id == "google_workspace":
-            client = integration_clients.GoogleWorkspaceClient(
-                creds.get("service_account_json"), creds.get("admin_email"),
-                creds.get("customer", "my_customer"))
-            res = client.audit_2sv_enrollment()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Workspace audit completed.")
-
-        elif integration_id == "crowdstrike":
-            client = integration_clients.CrowdStrikeClient(
-                creds.get("client_id"), creds.get("client_secret"), creds.get("base_url"))
-            res = client.audit_sensor_coverage()
-            compliant, reason = res.get("compliant", False), res.get("reason", "CrowdStrike audit completed.")
-
-        elif integration_id == "snyk":
-            client = integration_clients.SnykClient(creds.get("token"), creds.get("org_id"))
-            res = client.audit_vulnerabilities()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Snyk audit completed.")
-
-        elif integration_id == "jamf":
-            client = integration_clients.JamfClient(
-                creds.get("base_url"), creds.get("client_id"), creds.get("client_secret"),
-                creds.get("username"), creds.get("password"))
-            res = client.audit_disk_encryption()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Jamf audit completed.")
-
-        elif integration_id == "workday":
-            client = integration_clients.WorkdayClient(
-                creds.get("report_url"), creds.get("username"), creds.get("password"))
-            res = client.audit_worker_roster()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Workday audit completed.")
-
+        handler = integration_clients.SYNC_HANDLERS.get(integration_id)
+        if handler is None:
+            result = {"compliant": False,
+                      "reason": f"No live audit handler is configured for connector '{integration_id}'."}
         else:
-            compliant = False
-            reason = f"No live audit handler is configured for connector '{integration_id}'."
+            result = handler(creds)
+        compliant = result.get("compliant", False)
+        reason = result.get("reason", "Sync completed.")
 
         integration.last_audit_summary = reason
         integration.status = "Connected" if compliant else "Error"
+
+        # Any asset linked to this integration inherits the audit outcome.
+        for asset in db.query(models.Asset).filter_by(integration_id=integration_id, org_id=org_id).all():
+            asset.compliance_status = "Passing" if compliant else "Failing"
         db.commit()
 
         # Bridge the sync result to every imported control this connector tests
-        # (covers all connectors uniformly, including ones with no bespoke block
-        # above) and refresh affected framework readiness.
+        # and refresh affected framework readiness / drift events.
         try:
             framework_library.apply_connector_result(db, org_id, integration_id, compliant, source=source)
         except Exception as e:
             print(f"Connector->control mapping skipped for {integration_id}: {e}")
     finally:
         db.close()
+
+
+@app.get("/api/integrations/fields")
+def get_integration_fields(current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Per-connector credential field specs that drive the connect form."""
+    import integration_clients
+    return integration_clients.CONNECTOR_FIELDS
 
 @app.post("/api/integrations/{id}/sync")
 def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
@@ -2061,21 +1922,14 @@ def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = D
 
 @app.get("/api/integrations/{id}/logs")
 def get_integration_logs(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Real audit outcome only — no fabricated log timeline."""
     integration = db.query(models.Integration).filter_by(id=id, org_id=current_user.org_id).first()
-    level = "SUCCESS"
-    status_msg = (integration.last_audit_summary if integration and integration.last_audit_summary
-                  else "No sync has been run yet for this connector.")
-    if integration and integration.status == "Error":
-        level = "ERROR"
-    elif not integration or not integration.last_audit_summary:
-        level = "INFO"
-    base = int(time.time())
-    return [
-        {"timestamp": base - 30, "level": "INFO", "message": f"Establishing secure API channel to {id}..."},
-        {"timestamp": base - 20, "level": "INFO", "message": "Fetching remote security configuration via live vendor API..."},
-        {"timestamp": base - 10, "level": "INFO", "message": "Evaluating compliance against connected control evidence..."},
-        {"timestamp": base, "level": level, "message": status_msg}
-    ]
+    if not integration or not integration.last_audit_summary:
+        return [{"timestamp": int(time.time()), "level": "INFO",
+                 "message": "No sync has been run yet for this connector."}]
+    level = "ERROR" if integration.status == "Error" else "SUCCESS"
+    return [{"timestamp": integration.last_sync or int(time.time()), "level": level,
+             "message": integration.last_audit_summary}]
 
 # OAuth redirects and callbacks for integrations
 @app.get("/api/integrations/{id}/authorize")

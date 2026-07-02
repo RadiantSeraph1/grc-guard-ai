@@ -130,6 +130,46 @@ def test_github_branch_protection_paths(monkeypatch):
     print("SUCCESS: GitHub connector compliant/non-compliant paths verified.")
 
 
+def test_sync_registry_covers_catalog():
+    """Every cataloged connector has a sync handler and a credential field spec."""
+    ids = {e["id"] for e in ic.INTEGRATION_CATALOG}
+    assert ids == set(ic.SYNC_HANDLERS), "catalog and SYNC_HANDLERS diverged"
+    assert ids == set(ic.CONNECTOR_FIELDS), "catalog and CONNECTOR_FIELDS diverged"
+    # Handlers refuse cleanly on empty credentials (no raise, no green check).
+    for cid, handler in ic.SYNC_HANDLERS.items():
+        result = handler({})
+        assert result["compliant"] is False, f"{cid} handler passed with no creds"
+    print(f"SUCCESS: {len(ids)} connectors registered with fields + refusing handlers.")
+
+
+def test_github_posture_disambiguates_404(monkeypatch):
+    """Repo-404 (not found / bad token) and protection-404 (protection off) must
+    produce different verdicts and reasons."""
+    repo_ok = _FakeResponse(200, {"private": False, "security_and_analysis": {"secret_scanning": {"status": "enabled"}}})
+    prot_ok = _FakeResponse(200, {"required_pull_request_reviews": {"required_approving_review_count": 2}})
+    alerts_on = _FakeResponse(204, {})
+
+    # Fully hardened repo -> compliant
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({
+        "/protection": prot_ok, "/vulnerability-alerts": alerts_on, "/repos/org/repo": repo_ok}))
+    ok = ic.GitHubClient(token="t").audit_repo_posture("org", "repo")
+    assert ok["compliant"] is True and ok["details"]["min_reviews"] == 2
+
+    # Repo itself 404s -> explicit "not found or token lacks access"
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({}))
+    gone = ic.GitHubClient(token="t").audit_repo_posture("org", "repo")
+    assert gone["compliant"] is False and "not found or the token lacks access" in gone["reason"]
+
+    # Repo reachable but protection/alerts off -> "OFF" wording, not "not found".
+    # (Specific fragments first: the fake router matches substrings in order.)
+    off_404 = _FakeResponse(404, {})
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({
+        "/protection": off_404, "/vulnerability-alerts": off_404, "/repos/org/repo": repo_ok}))
+    off = ic.GitHubClient(token="t").audit_repo_posture("org", "repo")
+    assert off["compliant"] is False and "branch protection on 'main': OFF" in off["reason"]
+    print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
+
+
 def test_empty_directory_is_not_compliant(monkeypatch):
     """Vacuous-truth guard: an identity provider returning 0 users must NOT
     produce a green MFA/2SV check (found via live Auth0 test on an empty tenant)."""
