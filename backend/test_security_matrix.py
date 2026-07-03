@@ -71,12 +71,12 @@ def test_connectors_refuse_without_credentials():
                 "SNYK_TOKEN", "SNYK_ORG_ID", "JAMF_BASE_URL", "WORKDAY_REPORT_URL"):
         os.environ.pop(var, None)
     audits = [
-        ic.AWSClient(access_key=None, secret_key=None).audit_s3_encryption("bucket"),
+        ic.AWSClient(access_key=None, secret_key=None).audit_account_posture("bucket"),
         ic.GitHubClient(token=None).audit_branch_protection("o", "r"),
         ic.OktaClient(org_url=None, token=None).audit_mfa_enrollment(),
         ic.Auth0Client(domain=None).audit_users(),
-        ic.GCPClient(service_account_json=None).audit_bucket_encryption("bucket"),
-        ic.AzureClient().audit_storage_account(),
+        ic.GCPClient(service_account_json=None).audit_project_posture(),
+        ic.AzureClient().audit_subscription_posture(),
         ic.EntraClient().audit_mfa_enrollment(),
         ic.GoogleWorkspaceClient().audit_2sv_enrollment(),
         ic.CrowdStrikeClient().audit_sensor_coverage(),
@@ -168,6 +168,15 @@ def test_github_posture_disambiguates_404(monkeypatch):
     off = ic.GitHubClient(token="t").audit_repo_posture("org", "repo")
     assert off["compliant"] is False and "branch protection on 'main': OFF" in off["reason"]
     print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
+
+
+def test_port_spec_hits_admin():
+    """Firewall/NSG port matcher flags anything covering SSH(22) or RDP(3389)."""
+    h = ic._port_spec_hits_admin
+    assert h("22") and h("3389") and h("*") and h("0-65535") and h("20-30") and h("3000-4000")
+    assert not h("443") and not h("8080") and not h("80-90")
+    assert h("weird-service-tag")  # unknown -> conservative
+    print("SUCCESS: port matcher flags SSH/RDP exposure.")
 
 
 def test_posture_summary_is_all_or_nothing():

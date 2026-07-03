@@ -680,6 +680,20 @@ def _summarize_posture(subject: str, checks: list) -> dict:
     }
 
 
+def _port_spec_hits_admin(spec) -> bool:
+    """True if a firewall port spec ('22', '20-25', '*', 'Any') covers SSH(22)
+    or RDP(3389). Unknown specs (service tags) flag conservatively as True."""
+    spec = str(spec).strip()
+    if spec in ("*", "Any", "any", "0-65535"):
+        return True
+    try:
+        lo, hi = (spec.split("-", 1) if "-" in spec else (spec, spec))
+        lo, hi = int(lo), int(hi)
+        return lo <= 22 <= hi or lo <= 3389 <= hi
+    except Exception:
+        return True
+
+
 class GCPClient:
     """Audits Google Cloud Storage encryption / public-access posture.
 
@@ -699,13 +713,75 @@ class GCPClient:
             from google.oauth2 import service_account
             from google.auth.transport.requests import Request
             info = json.loads(self.service_account_json)
+            # Read-only across GCP so one token covers storage + compute checks.
             creds = service_account.Credentials.from_service_account_info(
-                info, scopes=["https://www.googleapis.com/auth/devstorage.read_only"]
+                info, scopes=["https://www.googleapis.com/auth/cloud-platform.read-only"]
             )
             creds.refresh(Request())
             return creds.token
         except Exception:
             return None
+
+    def audit_project_posture(self, bucket_name: Optional[str] = None) -> dict:
+        """Project-wide read-only posture audit: every GCS bucket enforces public
+        access prevention, no firewall opens SSH/RDP to 0.0.0.0/0, and optionally
+        a named bucket's encryption. Needs a service account with a read-only
+        role (e.g. roles/viewer or roles/iam.securityReviewer) and the Compute
+        API enabled for the firewall check.
+        """
+        if not self.service_account_json:
+            return _missing("GCP service account JSON not configured.")
+        if not self.project_id:
+            return _missing("GCP project_id is required for a project posture audit.")
+        token = self._token()
+        if not token:
+            return _missing("Failed to mint GCP access token. Check the service account key and scopes.")
+        headers = {"Authorization": f"Bearer {token}"}
+        checks = []
+        try:
+            with httpx.Client(timeout=25.0) as client:
+                b = client.get("https://storage.googleapis.com/storage/v1/b", headers=headers,
+                               params={"project": self.project_id, "fields": "items(name,iamConfiguration)"})
+                if b.status_code == 200:
+                    buckets = b.json().get("items", [])
+                    exposed = [x["name"] for x in buckets
+                               if x.get("iamConfiguration", {}).get("publicAccessPrevention") not in ("enforced", "inherited")]
+                    checks.append(("GCS public access prevention", not exposed,
+                                   "" if not exposed else
+                                   f"{len(exposed)} buckets not enforced: {', '.join(exposed[:5])}"))
+                else:
+                    checks.append(("GCS public access prevention", False, f"bucket list failed {b.status_code}"))
+
+                fw = client.get(f"https://compute.googleapis.com/compute/v1/projects/{self.project_id}/global/firewalls",
+                                headers=headers, params={"fields": "items(name,direction,disabled,sourceRanges,allowed)"})
+                if fw.status_code == 200:
+                    open_fw = set()
+                    for f in fw.json().get("items", []):
+                        if f.get("disabled") or f.get("direction", "INGRESS") != "INGRESS":
+                            continue
+                        if "0.0.0.0/0" not in (f.get("sourceRanges") or []):
+                            continue
+                        for allow in f.get("allowed", []):
+                            if allow.get("IPProtocol") not in ("tcp", "all"):
+                                continue
+                            ports = allow.get("ports")
+                            if ports is None or any(_port_spec_hits_admin(p) for p in ports):
+                                open_fw.add(f["name"])
+                    checks.append(("Firewall SSH/RDP exposure", not open_fw,
+                                   "" if not open_fw else
+                                   f"{len(open_fw)} allow 22/3389 from 0.0.0.0/0: {', '.join(sorted(open_fw)[:5])}"))
+                elif fw.status_code == 403:
+                    checks.append(("Firewall SSH/RDP exposure", False, "Compute API disabled or missing permission"))
+                else:
+                    checks.append(("Firewall SSH/RDP exposure", False, f"firewall list failed {fw.status_code}"))
+        except Exception as e:
+            checks.append(("GCP checks", False, str(e)[:120]))
+
+        if bucket_name:
+            res = self.audit_bucket_encryption(bucket_name)
+            checks.append((f"Bucket '{bucket_name}' encryption", res.get("compliant", False),
+                           "" if res.get("compliant") else res.get("reason", "")))
+        return _summarize_posture("GCP project", checks)
 
     def audit_bucket_encryption(self, bucket_name: str) -> dict:
         if not self.service_account_json:
@@ -775,6 +851,61 @@ class AzureClient:
         except Exception:
             pass
         return None
+
+    def audit_subscription_posture(self) -> dict:
+        """Subscription-wide read-only posture audit: every storage account
+        enforces HTTPS-only transfer + encryption at rest, and no network
+        security group allows the Internet inbound to SSH/RDP. Needs a service
+        principal with the Reader role on the subscription.
+        """
+        if not (self.tenant_id and self.client_id and self.client_secret):
+            return _missing("Azure credentials not configured. Provide tenant_id, client_id, client_secret.")
+        if not self.subscription_id:
+            return _missing("Azure subscription_id is required for a subscription posture audit.")
+        token = self._token()
+        if not token:
+            return _missing("Failed to obtain Azure management token. Check the service principal.")
+        headers = {"Authorization": f"Bearer {token}"}
+        base = f"https://management.azure.com/subscriptions/{self.subscription_id}"
+        checks = []
+        try:
+            with httpx.Client(timeout=25.0) as client:
+                sr = client.get(f"{base}/providers/Microsoft.Storage/storageAccounts",
+                                headers=headers, params={"api-version": "2023-01-01"})
+                if sr.status_code == 200:
+                    accts = sr.json().get("value", [])
+                    bad = [a["name"] for a in accts
+                           if not (a.get("properties", {}).get("supportsHttpsTrafficOnly")
+                                   and a.get("properties", {}).get("encryption", {}).get("services"))]
+                    checks.append(("Storage HTTPS-only + encryption", not bad,
+                                   "" if not bad else
+                                   f"{len(bad)} of {len(accts)} accounts insecure: {', '.join(bad[:5])}"))
+                else:
+                    checks.append(("Storage HTTPS-only + encryption", False, f"list failed {sr.status_code}: {sr.text[:100]}"))
+
+                nr = client.get(f"{base}/providers/Microsoft.Network/networkSecurityGroups",
+                                headers=headers, params={"api-version": "2023-05-01"})
+                if nr.status_code == 200:
+                    open_nsg = set()
+                    for nsg in nr.json().get("value", []):
+                        for rule in nsg.get("properties", {}).get("securityRules", []):
+                            p = rule.get("properties", {})
+                            if p.get("direction") != "Inbound" or p.get("access") != "Allow":
+                                continue
+                            sources = [p.get("sourceAddressPrefix") or ""] + (p.get("sourceAddressPrefixes") or [])
+                            if not any(s in ("*", "0.0.0.0/0", "Internet") for s in sources):
+                                continue
+                            ports = [p.get("destinationPortRange")] if p.get("destinationPortRange") else (p.get("destinationPortRanges") or [])
+                            if any(_port_spec_hits_admin(pr) for pr in ports):
+                                open_nsg.add(nsg.get("name"))
+                    checks.append(("NSG SSH/RDP exposure", not open_nsg,
+                                   "" if not open_nsg else
+                                   f"{len(open_nsg)} NSGs allow 22/3389 from Internet: {', '.join(sorted(open_nsg)[:5])}"))
+                else:
+                    checks.append(("NSG SSH/RDP exposure", False, f"list failed {nr.status_code}: {nr.text[:100]}"))
+        except Exception as e:
+            checks.append(("Azure checks", False, str(e)[:120]))
+        return _summarize_posture("Azure subscription", checks)
 
     def audit_storage_account(self) -> dict:
         if not (self.tenant_id and self.client_id and self.client_secret):
@@ -1172,16 +1303,16 @@ CONNECTOR_FIELDS: Dict[str, List[Dict[str, Any]]] = {
     ],
     "gcp": [
         {"key": "service_account_json", "label": "Service account JSON", "secret": True, "multiline": True},
-        {"key": "bucket_name", "label": "GCS bucket to audit", "secret": False},
-        {"key": "project_id", "label": "Project ID", "secret": False, "required": False},
+        {"key": "project_id", "label": "Project ID", "secret": False},
+        {"key": "bucket_name", "label": "GCS bucket to also check", "secret": False, "required": False},
     ],
     "azure": [
         {"key": "tenant_id", "label": "Tenant ID", "secret": False},
         {"key": "client_id", "label": "Client ID", "secret": False},
         {"key": "client_secret", "label": "Client secret", "secret": True},
         {"key": "subscription_id", "label": "Subscription ID", "secret": False},
-        {"key": "resource_group", "label": "Resource group", "secret": False},
-        {"key": "account_name", "label": "Storage account name", "secret": False},
+        {"key": "resource_group", "label": "Resource group", "secret": False, "required": False},
+        {"key": "account_name", "label": "Storage account name", "secret": False, "required": False},
     ],
     "okta": [
         {"key": "org_url", "label": "Org URL (https://x.okta.com)", "secret": False},
@@ -1274,10 +1405,10 @@ SYNC_HANDLERS = {
     "okta": _sync_okta,
     "auth0": _sync_auth0,
     "gcp": lambda c: GCPClient(c.get("service_account_json"), c.get("project_id"))
-        .audit_bucket_encryption(c.get("bucket_name") or os.environ.get("GCP_AUDIT_BUCKET", "")),
+        .audit_project_posture(c.get("bucket_name") or None),
     "azure": lambda c: AzureClient(c.get("tenant_id"), c.get("client_id"), c.get("client_secret"),
                                    c.get("subscription_id"), c.get("resource_group"),
-                                   c.get("account_name")).audit_storage_account(),
+                                   c.get("account_name")).audit_subscription_posture(),
     "entra": lambda c: EntraClient(c.get("tenant_id"), c.get("client_id"),
                                    c.get("client_secret")).audit_mfa_enrollment(),
     "google_workspace": lambda c: GoogleWorkspaceClient(c.get("service_account_json"), c.get("admin_email"),

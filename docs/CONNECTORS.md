@@ -27,22 +27,27 @@ Fields: `aws_access_key_id`, `aws_secret_access_key`, `region` (optional, defaul
 
 > EC2 and CloudTrail checks cover the chosen **region** only; multi-region trails still show up.
 
-## GCP — GCS bucket encryption / public access
-**Audits:** CMEK / public-access-prevention on a bucket.
+## GCP — project security posture
+**Audits (read-only):** every GCS bucket enforces public-access prevention, no
+firewall opens SSH/RDP (22/3389) to `0.0.0.0/0`, and optionally a named bucket's
+encryption. Aggregated into one verdict.
 1. Cloud Console → **IAM & Admin → Service Accounts → Create**.
-2. Grant it **Storage Object Viewer** (or `storage.buckets.get`) on the bucket.
-3. **Keys → Add key → JSON** → download.
+2. Grant it a read-only role at the **project** level: **Viewer** (or the tighter **Security Reviewer**).
+3. Enable the **Compute Engine API** on the project (for the firewall check).
+4. **Keys → Add key → JSON** → download.
 
-Fields: `service_account_json` (paste the whole JSON), `bucket_name`, `project_id` (optional).
+Fields: `service_account_json` (paste the whole JSON), `project_id`, `bucket_name` (optional).
 
-## Azure — Storage Account secure transfer + encryption
-**Audits:** HTTPS-only + encryption on a storage account.
+## Azure — subscription security posture
+**Audits (read-only):** every storage account enforces HTTPS-only + encryption,
+and no network security group allows the Internet inbound to SSH/RDP. Aggregated
+into one verdict.
 1. **Entra ID → App registrations → New registration**.
 2. **Certificates & secrets → New client secret** → copy the value.
-3. In the **storage account → Access control (IAM)** → assign the app the **Reader** role.
-4. Note **tenant ID** (app Overview), **subscription ID**, **resource group**, **account name**.
+3. **Subscription → Access control (IAM)** → assign the app the **Reader** role on the whole subscription.
+4. Note **tenant ID** (app Overview) and **subscription ID**.
 
-Fields: `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`, `account_name`.
+Fields: `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group` (optional), `account_name` (optional).
 
 ## Okta — MFA factor enrollment
 **Audits:** every user has an active MFA factor.
