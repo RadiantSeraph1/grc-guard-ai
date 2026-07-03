@@ -170,6 +170,29 @@ def test_github_posture_disambiguates_404(monkeypatch):
     print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
 
 
+def test_github_token_only_audits_accessible_repos(monkeypatch):
+    """OAuth stores only a token; sync must audit the token's visible repos
+    instead of erroring with 'owner/repo not configured'."""
+    repos = _FakeResponse(200, [
+        {"owner": {"login": "me"}, "name": "app", "default_branch": "main"},
+    ])
+    repo_ok = _FakeResponse(200, {"private": False, "security_and_analysis": {}})
+    prot_ok = _FakeResponse(200, {"required_pull_request_reviews": {"required_approving_review_count": 1}})
+    alerts_on = _FakeResponse(204, {})
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({
+        "/user/repos": repos, "/protection": prot_ok,
+        "/vulnerability-alerts": alerts_on, "/repos/me/app": repo_ok}))
+    out = ic._sync_github({"token": "t"})
+    assert out["compliant"] is True and out["details"]["audited"] == 1
+
+    # Token that can see nothing -> non-compliant, not a green check.
+    monkeypatch.setattr(ic.httpx, "Client", lambda **kw: _FakeHttpClient({
+        "/user/repos": _FakeResponse(200, [])}))
+    empty = ic._sync_github({"token": "t"})
+    assert empty["compliant"] is False and "0 repositories" in empty["reason"]
+    print("SUCCESS: token-only GitHub sync audits accessible repos.")
+
+
 def test_empty_directory_is_not_compliant(monkeypatch):
     """Vacuous-truth guard: an identity provider returning 0 users must NOT
     produce a green MFA/2SV check (found via live Auth0 test on an empty tenant)."""

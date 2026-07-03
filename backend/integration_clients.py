@@ -162,6 +162,54 @@ class GitHubClient:
         except Exception as e:
             return {"compliant": False, "reason": f"GitHub API request failed: {str(e)}", "details": {}}
 
+    def audit_accessible_repos(self, limit: int = 10) -> dict:
+        """Posture-audit the repos this token can see (OAuth flow: no owner/repo
+        was configured, so audit what the authorization actually grants).
+
+        Runs the multi-check posture audit on the `limit` most recently pushed
+        repos owned by the token's account; compliant only when every one
+        passes. ponytail: sequential calls, ~3 requests/repo — fine for a
+        background sync at limit=10; batch via GraphQL if this ever grows.
+        """
+        if not self.token:
+            return {"compliant": False, "reason": "GitHub API token not configured.", "details": {}}
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                res = client.get("https://api.github.com/user/repos",
+                                 headers=self._headers(),
+                                 params={"sort": "pushed", "per_page": limit, "type": "owner"})
+                if res.status_code != 200:
+                    return {"compliant": False,
+                            "reason": f"GitHub /user/repos returned {res.status_code}; check the token's scopes.",
+                            "details": {}}
+                repos = res.json()
+        except Exception as e:
+            return {"compliant": False, "reason": f"GitHub API request failed: {str(e)}", "details": {}}
+        if not repos:
+            return {"compliant": False,
+                    "reason": "The GitHub token can see 0 repositories; nothing to audit.",
+                    "details": {}}
+
+        failing = []
+        results = {}
+        for r in repos:
+            owner, name = r["owner"]["login"], r["name"]
+            audit = self.audit_repo_posture(owner, name, r.get("default_branch") or "main")
+            results[f"{owner}/{name}"] = audit.get("details", {})
+            if not audit.get("compliant"):
+                failing.append(f"{owner}/{name}")
+        compliant = not failing
+        return {
+            "compliant": compliant,
+            "reason": (
+                f"All {len(repos)} recently active repositories pass hardening checks."
+                if compliant else
+                f"{len(failing)} of {len(repos)} recently active repositories fail hardening checks: "
+                + ", ".join(failing[:5]) + (" ..." if len(failing) > 5 else "")
+            ),
+            "details": {"audited": len(repos), "failing": failing, "repos": results},
+        }
+
     def audit_branch_protection(self, owner: str, repo: str, branch: str = "main") -> dict:
         """Query GitHub API to verify branch protection rules are active."""
         if not self.token:
@@ -1114,11 +1162,12 @@ def _sync_aws(creds: dict) -> dict:
 
 def _sync_github(creds: dict) -> dict:
     client = GitHubClient(_first(creds, "token", "github_token", part=0))
-    return client.audit_repo_posture(
-        _first(creds, "owner", part=1, default=os.environ.get("GITHUB_OWNER", "")),
-        _first(creds, "repo", part=2, default=os.environ.get("GITHUB_REPO", "")),
-        _first(creds, "branch", part=3, default="main"),
-    )
+    owner = _first(creds, "owner", part=1, default=os.environ.get("GITHUB_OWNER", ""))
+    repo = _first(creds, "repo", part=2, default=os.environ.get("GITHUB_REPO", ""))
+    if owner and repo:
+        return client.audit_repo_posture(owner, repo, _first(creds, "branch", part=3, default="main"))
+    # OAuth flow stores only a token — audit whatever repos it can actually see.
+    return client.audit_accessible_repos()
 
 
 def _sync_okta(creds: dict) -> dict:
