@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Cloud, Key, Code, Users, Terminal, X, ShieldAlert, Server, Laptop, Plug,
+  Cloud, Key, Code, Users, X, ShieldAlert, Server, Laptop, Plug,
 } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import {
@@ -13,13 +13,13 @@ import {
 // Per-connector presentation + credential hints. Connectors themselves come from
 // the backend catalog (/api/integrations); this only drives icons/help text.
 const CONNECTOR_META = {
-  aws: "Audits S3 bucket encryption and storage security configuration.",
-  gcp: "Audits GCS bucket encryption and public-access prevention.",
-  azure: "Audits Storage Account secure-transfer and encryption settings.",
-  okta: "Retrieves user rosters and verifies MFA factor enrollment.",
+  aws: "Audits account posture: root MFA, IAM password policy, EBS encryption, SSH/RDP exposure, CloudTrail.",
+  gcp: "Audits project posture: bucket public-access prevention and SSH/RDP firewall exposure.",
+  azure: "Audits subscription posture: storage HTTPS/encryption and NSG SSH/RDP exposure.",
+  okta: "Audits identity posture: MFA enrollment, password policy, and dormant accounts.",
   auth0: "Audits directory users, MFA Guardian enrollment, login logs, and roles.",
-  entra: "Audits Entra ID users and MFA via Microsoft Graph.",
-  google_workspace: "Audits Workspace users and 2-Step Verification enrollment.",
+  entra: "Audits identity posture: strong-auth registration and security-defaults baseline MFA.",
+  google_workspace: "Audits identity posture: 2SV for all users, 2SV for admins, and dormant accounts.",
   github: "Audits repo security posture: branch protection, Dependabot alerts, secret scanning, visibility.",
   snyk: "Audits open critical/high vulnerabilities across monitored projects.",
   crowdstrike: "Audits endpoint sensor coverage and detection posture.",
@@ -123,18 +123,23 @@ export default function IntegrationsPage() {
 
   const handleSync = async (id) => {
     setSyncingId(id);
+    setSyncLogs(null);
     try {
-      const data = await api.post(`/api/integrations/${id}/sync`);
-      if (data?.status === "sync_started") {
-        const logData = await api.get(`/api/integrations/${id}/logs`);
-        setSyncLogs({ integration: id, entries: Array.isArray(logData) ? logData : [] });
-        await fetchIntegrations();
+      const started = await api.post(`/api/integrations/${id}/sync`);
+      if (started?.status !== "sync_started") return;
+      // The audit runs as a backend background task, so poll the result until it
+      // lands (level flips from INFO once last_audit_summary is written).
+      let result = null;
+      for (let i = 0; i < 20 && !result; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const logs = await api.get(`/api/integrations/${id}/logs`);
+        const entry = Array.isArray(logs) ? logs[0] : null;
+        if (entry && entry.level !== "INFO") result = entry;
       }
+      await fetchIntegrations();
+      setSyncLogs({ integration: id, result: result || { level: "INFO", message: "Sync is still running — check back shortly." } });
     } catch {
-      setSyncLogs({
-        integration: id,
-        entries: [{ level: "ERROR", message: "Could not reach the backend integration gateway." }],
-      });
+      setSyncLogs({ integration: id, result: { level: "ERROR", message: "Could not reach the backend integration gateway." } });
     } finally {
       setSyncingId(null);
     }
@@ -226,28 +231,24 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      {/* Sync log overlay */}
+      {/* Sync result toast */}
       {syncLogs && (
-        <div className="fixed bottom-6 right-6 w-96 max-w-[calc(100vw-3rem)] ui-card ui-fade-in shadow-2xl p-4 z-50 text-xs">
-          <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-3">
-            <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
-              <Terminal size={14} className="text-zinc-400" />
-              Sync output: {syncLogs.integration.toUpperCase()}
-            </span>
-            <button onClick={() => setSyncLogs(null)} className="text-zinc-500 hover:text-zinc-200 cursor-pointer">
+        <div className="fixed bottom-6 right-6 w-96 max-w-[calc(100vw-3rem)] ui-card ui-fade-in shadow-2xl p-4 z-50">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={cn("w-2 h-2 rounded-full shrink-0",
+                syncLogs.result.level === "SUCCESS" ? "bg-emerald-400" : syncLogs.result.level === "ERROR" ? "bg-rose-400" : "bg-amber-400")} />
+              <span className="text-sm font-semibold text-zinc-100 truncate">
+                {syncLogs.integration.toUpperCase()} sync {syncLogs.result.level === "SUCCESS" ? "passed" : syncLogs.result.level === "ERROR" ? "found issues" : "pending"}
+              </span>
+            </div>
+            <button onClick={() => setSyncLogs(null)} className="text-zinc-500 hover:text-zinc-200 cursor-pointer shrink-0">
               <X size={14} />
             </button>
           </div>
-          <div className="font-mono bg-[#09090b] p-3 rounded-lg h-44 overflow-y-auto space-y-1.5 text-xs custom-scrollbar border border-zinc-800">
-            {syncLogs.entries.map((log, idx) => (
-              <div key={idx} className="flex items-start gap-1.5">
-                <span className={cn("font-semibold", log.level === "SUCCESS" ? "text-emerald-400" : log.level === "WARNING" ? "text-amber-400" : "text-rose-400")}>
-                  [{log.level}]
-                </span>
-                <span className="break-all text-zinc-300">{log.message}</span>
-              </div>
-            ))}
-          </div>
+          <p className="text-xs text-zinc-400 leading-relaxed mt-2 max-h-64 overflow-y-auto custom-scrollbar">
+            {syncLogs.result.message}
+          </p>
         </div>
       )}
 
