@@ -47,6 +47,7 @@ export default function IntegrationsPage() {
   const [activeIntegration, setActiveIntegration] = useState(null);
   const [credValues, setCredValues] = useState({});
   const [fieldsMap, setFieldsMap] = useState({});
+  const [oauthIds, setOauthIds] = useState([]);
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
   const [connectionMode, setConnectionMode] = useState("api");
@@ -55,7 +56,11 @@ export default function IntegrationsPage() {
     try {
       const data = await api.get("/api/integrations");
       setIntegrations(Array.isArray(data) ? data : []);
-      try { setFieldsMap(await api.get("/api/integrations/fields")); } catch { /* form falls back to a generic token field */ }
+      try {
+        const spec = await api.get("/api/integrations/fields");
+        setFieldsMap(spec.fields || {});
+        setOauthIds(spec.oauth || []);
+      } catch { /* form falls back to a generic token field */ }
     } catch {
       setIntegrations([]);
     } finally {
@@ -256,25 +261,27 @@ export default function IntegrationsPage() {
       >
         {activeIntegration && (
           <>
-            <div className="flex border border-zinc-800 rounded-lg overflow-hidden text-xs">
-              {["api", "oauth"].map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setConnectionMode(mode)}
-                  className={cn(
-                    "flex-1 py-2 font-semibold cursor-pointer transition-colors border-zinc-800",
-                    mode === "api" && "border-r",
-                    connectionMode === mode ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                  )}
-                >
-                  {mode === "api" ? "API Credentials" : "OAuth Web Connection"}
-                </button>
-              ))}
-            </div>
+            {oauthIds.includes(activeIntegration.id) && (
+              <div className="flex border border-zinc-800 rounded-lg overflow-hidden text-xs">
+                {["api", "oauth"].map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setConnectionMode(mode)}
+                    className={cn(
+                      "flex-1 py-2 font-semibold cursor-pointer transition-colors border-zinc-800",
+                      mode === "api" && "border-r",
+                      connectionMode === mode ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {mode === "api" ? "API Credentials" : "OAuth Web Connection"}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <form onSubmit={handleConnect} className="space-y-4">
-              {connectionMode === "api" ? (
+              {connectionMode === "api" || !oauthIds.includes(activeIntegration.id) ? (
                 <div className="space-y-3">
                   {(fieldsMap[activeIntegration.id] || [{ key: "token", label: "API token", secret: true }]).map((f) => (
                     <Field key={f.key} label={f.label + (f.required === false ? " (optional)" : "")}>
@@ -309,8 +316,8 @@ export default function IntegrationsPage() {
                     OAuth &amp; web redirect mode
                   </div>
                   <p className="leading-relaxed">
-                    GitHub can use OAuth when GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are configured on the backend.
-                    Other systems use API credentials.
+                    You&apos;ll be redirected to {activeIntegration.name} to authorize read-only access, then
+                    returned here. Prefer the API Credentials tab if you already have a token.
                   </p>
                 </div>
               )}

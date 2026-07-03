@@ -170,6 +170,29 @@ def test_github_posture_disambiguates_404(monkeypatch):
     print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
 
 
+def test_oauth_registry_gates_on_configured_credentials(monkeypatch):
+    """OAuth is offered only for providers whose client id+secret are set; the
+    authorize URL and fields payload reflect that."""
+    import main
+    # No creds -> not offered, authorize 400s.
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "")
+    assert "github" not in main.oauth_supported_ids()
+    spec = client.get("/api/integrations/fields", headers=ADMIN).json()
+    assert "fields" in spec and "oauth" in spec and "github" not in spec["oauth"]
+    assert client.get("/api/integrations/github/authorize", headers=ADMIN).status_code == 400
+
+    # Both set -> offered, authorize returns a real vendor URL with our redirect.
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.test")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "secret")
+    assert "github" in main.oauth_supported_ids()
+    res = client.get("/api/integrations/github/authorize", headers=ADMIN).json()
+    assert res["authorize_url"].startswith("https://github.com/login/oauth/authorize?")
+    assert "client_id=Iv1.test" in res["authorize_url"]
+    assert "%2Fapi%2Fintegrations%2Fgithub%2Fcallback" in res["authorize_url"]
+    print("SUCCESS: OAuth registry gates on configured credentials.")
+
+
 def test_github_token_only_audits_accessible_repos(monkeypatch):
     """OAuth stores only a token; sync must audit the token's visible repos
     instead of erroring with 'owner/repo not configured'."""
