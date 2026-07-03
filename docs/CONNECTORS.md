@@ -49,9 +49,9 @@ into one verdict.
 
 Fields: `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group` (optional), `account_name` (optional).
 
-## Okta — MFA factor enrollment
-**Audits:** every user has an active MFA factor.
-1. Okta Admin → **Security → API → Tokens → Create token** → copy it.
+## Okta — identity posture
+**Audits:** every active user has an MFA factor, an active password policy exists, and no active account is dormant (>90d since login).
+1. Okta Admin → **Security → API → Tokens → Create token** (created by a read-only admin so it can read policies) → copy it.
 2. Your org URL is `https://<your-org>.okta.com`.
 
 Fields: `org_url`, `token`.
@@ -64,16 +64,16 @@ Fields: `org_url`, `token`.
 
 Fields: `domain`, `client_id`, `client_secret`.
 
-## Microsoft Entra ID — MFA / strong auth methods
-**Audits:** every enabled user has a strong (non-password) auth method.
+## Microsoft Entra ID — identity posture
+**Audits:** every enabled user has a strong (non-password) auth method, and the tenant's security-defaults baseline MFA is enforced.
 1. **Entra ID → App registrations → New registration**.
-2. **API permissions → Add → Microsoft Graph → Application permissions**: `User.Read.All`, `UserAuthenticationMethod.Read.All` → **Grant admin consent**.
+2. **API permissions → Add → Microsoft Graph → Application permissions**: `User.Read.All`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All` → **Grant admin consent**.
 3. **Certificates & secrets → New client secret**.
 
 Fields: `tenant_id`, `client_id`, `client_secret`.
 
-## Google Workspace — 2-Step Verification enrollment
-**Audits:** every active user is enrolled in 2SV.
+## Google Workspace — identity posture
+**Audits:** all active users enrolled in 2SV, every admin enrolled in 2SV, and no active account dormant (>90d).
 1. Create a GCP **service account** and **enable domain-wide delegation** (note its client ID).
 2. Admin console → **Security → API controls → Domain-wide delegation** → add the client ID with scope `https://www.googleapis.com/auth/admin.directory.user.readonly`.
 3. Download the service-account **JSON key**.

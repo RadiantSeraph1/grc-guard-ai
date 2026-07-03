@@ -335,6 +335,38 @@ class OktaClient:
         self.org_url = org_url or os.environ.get("OKTA_ORG_URL")
         self.token = token or os.environ.get("OKTA_API_TOKEN")
 
+    def audit_identity_posture(self) -> dict:
+        """Identity posture: every active user has MFA, an active password policy
+        exists, and no active account is dormant (>90d since login). The API
+        token inherits its creator's admin permissions (use a read-only admin).
+        ponytail: re-fetches users for the stale check; merge into one pass if
+        sync latency matters."""
+        if not self.org_url or not self.token:
+            return _missing("Okta org URL or API token not configured.")
+        base = self.org_url.rstrip("/")
+        headers = {"Authorization": f"SSWS {self.token}", "Accept": "application/json"}
+        checks = []
+        mfa = self.audit_mfa_enrollment()
+        checks.append(("MFA enrollment", mfa["compliant"], "" if mfa["compliant"] else mfa["reason"]))
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                pp = client.get(f"{base}/api/v1/policies", headers=headers, params={"type": "PASSWORD"})
+                active = [p for p in (pp.json() if pp.status_code == 200 else []) if p.get("status") == "ACTIVE"]
+                checks.append(("Password policy", pp.status_code == 200 and bool(active),
+                               "" if active else (f"policy read failed {pp.status_code}" if pp.status_code != 200 else "no active password policy")))
+                ur = client.get(f"{base}/api/v1/users", headers=headers, params={"limit": 200})
+                if ur.status_code == 200:
+                    stale = [u.get("profile", {}).get("email") for u in ur.json()
+                             if u.get("status") == "ACTIVE" and _is_stale(u.get("lastLogin"))]
+                    stale = [e for e in stale if e]
+                    checks.append(("No dormant active accounts", not stale,
+                                   "" if not stale else f"{len(stale)} active >90d since login: {', '.join(stale[:5])}"))
+                else:
+                    checks.append(("No dormant active accounts", False, f"user list failed {ur.status_code}"))
+        except Exception as e:
+            checks.append(("Okta checks", False, str(e)[:120]))
+        return _summarize_posture("Okta", checks)
+
     def audit_mfa_enrollment(self) -> dict:
         """Fetch users and check their MFA enrollment factors."""
         if not self.org_url or not self.token:
@@ -694,6 +726,22 @@ def _port_spec_hits_admin(spec) -> bool:
         return True
 
 
+def _is_stale(iso_ts, days: int = 90) -> bool:
+    """True if an ISO8601 last-login timestamp is older than `days`. A missing
+    value returns False (avoids false-positives on freshly-created accounts).
+    ponytail: Google reports never-logged-in as epoch 1970, which reads as stale."""
+    if not iso_ts:
+        return False
+    try:
+        from datetime import datetime, timezone
+        t = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - t).days > days
+    except Exception:
+        return False
+
+
 class GCPClient:
     """Audits Google Cloud Storage encryption / public-access posture.
 
@@ -973,6 +1021,35 @@ class EntraClient:
             pass
         return None
 
+    def audit_identity_posture(self) -> dict:
+        """Identity posture: every enabled user has a strong auth method, and the
+        tenant's security defaults baseline MFA is enforced. Security-defaults
+        check needs the Graph app permission Policy.Read.All (in addition to the
+        MFA check's User.Read.All + UserAuthenticationMethod.Read.All)."""
+        if not (self.tenant_id and self.client_id and self.client_secret):
+            return _missing("Entra credentials not configured. Provide tenant_id, client_id, client_secret.")
+        token = self._token()
+        if not token:
+            return _missing("Failed to obtain Microsoft Graph token. Check the app registration and permissions.")
+        headers = {"Authorization": f"Bearer {token}"}
+        checks = []
+        mfa = self.audit_mfa_enrollment()
+        checks.append(("MFA registration", mfa["compliant"], "" if mfa["compliant"] else mfa["reason"]))
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                sd = client.get("https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy",
+                                headers=headers)
+                if sd.status_code == 200:
+                    on = bool(sd.json().get("isEnabled", False))
+                    checks.append(("Security defaults (baseline MFA)", on,
+                                   "" if on else "security defaults are OFF - confirm Conditional Access enforces MFA"))
+                else:
+                    checks.append(("Security defaults (baseline MFA)", False,
+                                   f"policy read failed {sd.status_code} (needs Policy.Read.All)"))
+        except Exception as e:
+            checks.append(("Entra checks", False, str(e)[:120]))
+        return _summarize_posture("Entra ID", checks)
+
     def audit_mfa_enrollment(self) -> dict:
         if not (self.tenant_id and self.client_id and self.client_secret):
             return _missing("Entra credentials not configured. Provide tenant_id, client_id, client_secret.")
@@ -1047,6 +1124,50 @@ class GoogleWorkspaceClient:
             return creds.token
         except Exception:
             return None
+
+    def audit_identity_posture(self) -> dict:
+        """Identity posture from one directory fetch: all active users enrolled in
+        2SV, every admin enrolled in 2SV, and no active account dormant (>90d).
+        Needs the same directory.user.readonly scope as the 2SV check."""
+        if not (self.service_account_json and self.admin_email):
+            return _missing("Google Workspace not configured. Provide service_account_json and admin_email.")
+        token = self._token()
+        if not token:
+            return _missing("Failed to mint Workspace token. Check domain-wide delegation and the admin subject.")
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                users, page = [], None
+                while True:
+                    params = {"customer": self.customer, "maxResults": 200, "projection": "full"}
+                    if page:
+                        params["pageToken"] = page
+                    res = client.get("https://admin.googleapis.com/admin/directory/v1/users",
+                                     headers=headers, params=params)
+                    if res.status_code != 200:
+                        return _missing(f"Workspace users call returned {res.status_code}: {res.text[:200]}")
+                    body = res.json()
+                    users.extend(body.get("users", []))
+                    page = body.get("nextPageToken")
+                    if not page:
+                        break
+        except Exception as e:
+            return _missing(f"Google Workspace audit failed: {str(e)}")
+
+        active = [u for u in users if not u.get("suspended")]
+        not_2sv = [u.get("primaryEmail") for u in active if not u.get("isEnrolledIn2Sv")]
+        admins_no_2sv = [u.get("primaryEmail") for u in active
+                         if (u.get("isAdmin") or u.get("isDelegatedAdmin")) and not u.get("isEnrolledIn2Sv")]
+        stale = [u.get("primaryEmail") for u in active if _is_stale(u.get("lastLoginTime"))]
+        checks = [
+            ("2SV enrollment (all active)", len(active) > 0 and not not_2sv,
+             "" if not not_2sv else f"{len(not_2sv)} of {len(active)} active users not enrolled"),
+            ("Admins have 2SV", not admins_no_2sv,
+             "" if not admins_no_2sv else f"{len(admins_no_2sv)} admins without 2SV: {', '.join([e for e in admins_no_2sv if e][:5])}"),
+            ("No dormant active accounts", not stale,
+             "" if not stale else f"{len([e for e in stale if e])} active >90d since login"),
+        ]
+        return _summarize_posture("Google Workspace", checks)
 
     def audit_2sv_enrollment(self) -> dict:
         if not (self.service_account_json and self.admin_email):
@@ -1391,7 +1512,7 @@ def _sync_github(creds: dict) -> dict:
 
 def _sync_okta(creds: dict) -> dict:
     return OktaClient(_first(creds, "org_url", "okta_org_url", part=0),
-                      _first(creds, "token", "okta_api_token", part=1)).audit_mfa_enrollment()
+                      _first(creds, "token", "okta_api_token", part=1)).audit_identity_posture()
 
 
 def _sync_auth0(creds: dict) -> dict:
@@ -1410,9 +1531,9 @@ SYNC_HANDLERS = {
                                    c.get("subscription_id"), c.get("resource_group"),
                                    c.get("account_name")).audit_subscription_posture(),
     "entra": lambda c: EntraClient(c.get("tenant_id"), c.get("client_id"),
-                                   c.get("client_secret")).audit_mfa_enrollment(),
+                                   c.get("client_secret")).audit_identity_posture(),
     "google_workspace": lambda c: GoogleWorkspaceClient(c.get("service_account_json"), c.get("admin_email"),
-                                                        c.get("customer", "my_customer")).audit_2sv_enrollment(),
+                                                        c.get("customer", "my_customer")).audit_identity_posture(),
     "crowdstrike": lambda c: CrowdStrikeClient(c.get("client_id"), c.get("client_secret"),
                                                c.get("base_url")).audit_sensor_coverage(),
     "snyk": lambda c: SnykClient(c.get("token"), c.get("org_id")).audit_vulnerabilities(),

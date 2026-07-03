@@ -73,12 +73,12 @@ def test_connectors_refuse_without_credentials():
     audits = [
         ic.AWSClient(access_key=None, secret_key=None).audit_account_posture("bucket"),
         ic.GitHubClient(token=None).audit_branch_protection("o", "r"),
-        ic.OktaClient(org_url=None, token=None).audit_mfa_enrollment(),
+        ic.OktaClient(org_url=None, token=None).audit_identity_posture(),
         ic.Auth0Client(domain=None).audit_users(),
         ic.GCPClient(service_account_json=None).audit_project_posture(),
         ic.AzureClient().audit_subscription_posture(),
-        ic.EntraClient().audit_mfa_enrollment(),
-        ic.GoogleWorkspaceClient().audit_2sv_enrollment(),
+        ic.EntraClient().audit_identity_posture(),
+        ic.GoogleWorkspaceClient().audit_identity_posture(),
         ic.CrowdStrikeClient().audit_sensor_coverage(),
         ic.SnykClient().audit_vulnerabilities(),
         ic.JamfClient().audit_disk_encryption(),
@@ -168,6 +168,18 @@ def test_github_posture_disambiguates_404(monkeypatch):
     off = ic.GitHubClient(token="t").audit_repo_posture("org", "repo")
     assert off["compliant"] is False and "branch protection on 'main': OFF" in off["reason"]
     print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
+
+
+def test_is_stale_login():
+    """Dormant-account matcher: flags logins older than 90d, not missing/new ones."""
+    from datetime import datetime, timezone, timedelta
+    old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat().replace("+00:00", "Z")
+    recent = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat().replace("+00:00", "Z")
+    assert ic._is_stale(old) is True
+    assert ic._is_stale(recent) is False
+    assert ic._is_stale(None) is False          # never-logged-in -> not flagged
+    assert ic._is_stale("garbage") is False     # unparseable -> not flagged
+    print("SUCCESS: dormant-account matcher only flags real >90d logins.")
 
 
 def test_port_spec_hits_admin():
