@@ -170,6 +170,18 @@ def test_github_posture_disambiguates_404(monkeypatch):
     print("SUCCESS: GitHub posture audit disambiguates 404s and grades hardening.")
 
 
+def test_posture_summary_is_all_or_nothing():
+    """The shared posture aggregator (AWS account, GitHub repo) is compliant only
+    when every check passes, and reports the count either way."""
+    s = ic._summarize_posture
+    ok = s("AWS account", [("mfa", True, ""), ("trail", True, "")])
+    assert ok["compliant"] and ok["details"]["passed"] == 2 and "2/2" in ok["reason"]
+    bad = s("AWS account", [("mfa", True, ""), ("sg", False, "port 22 open")])
+    assert bad["compliant"] is False and "1/2" in bad["reason"] and "port 22 open" in bad["reason"]
+    assert s("AWS account", [])["compliant"] is False  # nothing audited != compliant
+    print("SUCCESS: posture aggregation is all-or-nothing.")
+
+
 def test_oauth_registry_gates_on_configured_credentials(monkeypatch):
     """OAuth is offered only for providers whose client id+secret are set; the
     authorize URL and fields payload reflect that."""

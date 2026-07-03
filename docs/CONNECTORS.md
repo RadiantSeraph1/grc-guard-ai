@@ -14,13 +14,18 @@ the listed fields into the connect form, then click **Sync**.
 
 ---
 
-## AWS — S3 bucket encryption
-**Audits:** server-side encryption on a bucket.
+## AWS — account security posture
+**Audits (CIS-style, read-only):** root-account MFA, an IAM password policy,
+EBS default encryption, security groups exposing SSH/RDP to `0.0.0.0/0`,
+CloudTrail enabled, and optionally a named S3 bucket's encryption. Aggregated
+into one verdict (compliant only when all checks pass).
 1. AWS Console → **IAM → Users → Create user** (or reuse a machine user).
-2. Attach a minimal read policy: `s3:GetEncryptionConfiguration` on the target bucket (the managed `AmazonS3ReadOnlyAccess` also works).
+2. Attach the AWS-managed **`SecurityAudit`** policy (read-only across services). Narrower alternative: `ReadOnlyAccess`.
 3. **Security credentials → Create access key** → copy the key + secret.
 
-Fields: `aws_access_key_id`, `aws_secret_access_key`, `bucket_name`.
+Fields: `aws_access_key_id`, `aws_secret_access_key`, `region` (optional, default `us-east-1`), `bucket_name` (optional).
+
+> EC2 and CloudTrail checks cover the chosen **region** only; multi-region trails still show up.
 
 ## GCP — GCS bucket encryption / public access
 **Audits:** CMEK / public-access-prevention on a bucket.

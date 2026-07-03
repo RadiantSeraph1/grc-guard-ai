@@ -90,6 +90,77 @@ class AWSClient:
                 "details": {}
             }
 
+    def audit_account_posture(self, bucket_name: Optional[str] = None) -> dict:
+        """Account-wide read-only posture audit (CIS-style): IAM root MFA + a
+        password policy, EBS default encryption, security groups exposing SSH/RDP
+        to the internet, CloudTrail enabled, and optionally one bucket's
+        encryption. Aggregated into a single compliant/non-compliant verdict.
+
+        Each check is isolated: a missing read permission fails that one check
+        (with the reason) instead of aborting the whole audit. Needs read perms
+        ~= the AWS-managed SecurityAudit policy.
+
+        ponytail: EC2 + CloudTrail cover only self.region; loop regions if you
+        need multi-region coverage.
+        """
+        if not self.access_key or not self.secret_key:
+            return _missing("AWS credentials not configured. Provide a read-only access key + secret.")
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+        except Exception as e:
+            return _missing(f"boto3 unavailable: {e}")
+
+        def _client(svc):
+            return boto3.client(svc, aws_access_key_id=self.access_key,
+                                aws_secret_access_key=self.secret_key, region_name=self.region)
+
+        checks = []  # (label, passed: bool, detail: str)
+
+        try:
+            iam = _client("iam")
+            mfa_on = iam.get_account_summary().get("SummaryMap", {}).get("AccountMFAEnabled", 0) == 1
+            checks.append(("Root account MFA", mfa_on, "" if mfa_on else "root user has no MFA"))
+            try:
+                iam.get_account_password_policy()
+                checks.append(("IAM password policy", True, ""))
+            except ClientError as e:
+                no_policy = e.response["Error"]["Code"] == "NoSuchEntity"
+                checks.append(("IAM password policy", False, "none set" if no_policy else str(e)[:100]))
+        except Exception as e:
+            checks.append(("IAM checks", False, str(e)[:120]))
+
+        try:
+            ec2 = _client("ec2")
+            ebs = bool(ec2.get_ebs_encryption_by_default().get("EbsEncryptionByDefault", False))
+            checks.append((f"EBS default encryption ({self.region})", ebs, "" if ebs else "disabled"))
+            open_sgs = set()
+            for sg in ec2.describe_security_groups().get("SecurityGroups", []):
+                for perm in sg.get("IpPermissions", []):
+                    exposed = any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges", []))
+                    frm, to = perm.get("FromPort"), perm.get("ToPort")
+                    admin_port = frm is None or (frm <= 22 <= to or frm <= 3389 <= to)  # None = all ports
+                    if exposed and admin_port:
+                        open_sgs.add(sg.get("GroupId"))
+            checks.append((f"Security groups ({self.region})", not open_sgs,
+                           "" if not open_sgs else
+                           f"{len(open_sgs)} expose SSH/RDP to 0.0.0.0/0: {', '.join(sorted(open_sgs)[:5])}"))
+        except Exception as e:
+            checks.append((f"EC2 checks ({self.region})", False, str(e)[:120]))
+
+        try:
+            trails = _client("cloudtrail").describe_trails().get("trailList", [])
+            checks.append(("CloudTrail enabled", len(trails) > 0, "" if trails else "no trails configured"))
+        except Exception as e:
+            checks.append(("CloudTrail check", False, str(e)[:120]))
+
+        if bucket_name:
+            res = self.audit_s3_encryption(bucket_name)
+            checks.append((f"S3 '{bucket_name}' encryption", res.get("compliant", False),
+                           "" if res.get("compliant") else res.get("reason", "")))
+
+        return _summarize_posture("AWS account", checks)
+
 class GitHubClient:
     """Real client for auditing repositories using GitHub's REST API."""
     def __init__(self, token: Optional[str] = None):
@@ -594,6 +665,21 @@ def _missing(reason: str) -> dict:
     return {"compliant": False, "reason": reason, "details": {}}
 
 
+def _summarize_posture(subject: str, checks: list) -> dict:
+    """Aggregate [(label, passed, detail), ...] into one audit verdict.
+    Compliant only when there is at least one check and all pass."""
+    passed = sum(1 for _, ok, _ in checks if ok)
+    total = len(checks)
+    lines = [f"{label}: {'PASS' if ok else 'FAIL'}" + (f" ({detail})" if detail else "")
+             for label, ok, detail in checks]
+    return {
+        "compliant": total > 0 and passed == total,
+        "reason": f"{subject}: {passed}/{total} posture checks passed - " + "; ".join(lines),
+        "details": {"passed": passed, "total": total,
+                    "checks": [{"label": l, "passed": ok, "detail": d} for l, ok, d in checks]},
+    }
+
+
 class GCPClient:
     """Audits Google Cloud Storage encryption / public-access posture.
 
@@ -1081,7 +1167,8 @@ CONNECTOR_FIELDS: Dict[str, List[Dict[str, Any]]] = {
     "aws": [
         {"key": "aws_access_key_id", "label": "Access key ID", "secret": False},
         {"key": "aws_secret_access_key", "label": "Secret access key", "secret": True},
-        {"key": "bucket_name", "label": "S3 bucket to audit", "secret": False},
+        {"key": "region", "label": "Region", "secret": False, "required": False, "placeholder": "us-east-1"},
+        {"key": "bucket_name", "label": "S3 bucket to also check", "secret": False, "required": False},
     ],
     "gcp": [
         {"key": "service_account_json", "label": "Service account JSON", "secret": True, "multiline": True},
@@ -1155,9 +1242,10 @@ def _first(creds: dict, *keys, part: int = None, default=None):
 
 def _sync_aws(creds: dict) -> dict:
     client = AWSClient(_first(creds, "aws_access_key_id", "access_key", part=0),
-                       _first(creds, "aws_secret_access_key", "secret_key", part=1))
-    return client.audit_s3_encryption(_first(creds, "bucket_name", "bucket", part=2,
-                                             default=os.environ.get("AWS_AUDIT_BUCKET", "")))
+                       _first(creds, "aws_secret_access_key", "secret_key", part=1),
+                       region=_first(creds, "region", default=os.environ.get("AWS_REGION", "us-east-1")))
+    return client.audit_account_posture(
+        _first(creds, "bucket_name", "bucket", part=2, default=os.environ.get("AWS_AUDIT_BUCKET") or None))
 
 
 def _sync_github(creds: dict) -> dict:
