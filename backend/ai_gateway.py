@@ -2,8 +2,12 @@
 
 Every LLM call in the platform routes through here. The active provider is read
 from the per-organization AIProviderConfig table (configured in Settings or via
-environment variables). The target provider is the in-house trained GRC model
-("inhouse"); Groq is the interim provider for testing until that model is ready.
+environment variables). Supported providers:
+
+  - **Vertex AI / Gemini** (primary) — Google's Gemini models via Vertex AI.
+  - **In-house** — custom trained GRC model via OpenAI-compatible endpoint.
+  - **Groq** (interim) — fast inference for testing until in-house is ready.
+
 When no provider is usable the gateway returns an explicit "no model available"
 notice instead of fabricated output.
 
@@ -12,6 +16,7 @@ giving the whole platform a single, consistent agent runtime.
 """
 
 import json
+import logging
 import os
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -19,22 +24,21 @@ from database import SessionLocal
 from models import AIProviderConfig
 import security
 
+logger = logging.getLogger(__name__)
+
 # All provider configs are org-scoped. Background callers (agents, schedulers)
 # sometimes pass org_id=None; coercing to the default company here prevents
 # creating ownerless (org_id=NULL) rows that double-activate alongside the real
 # per-org row (bug C1).
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
 
-# Active AI providers. The platform targets a single in-house trained GRC model
-# ("inhouse"); Groq is the interim provider for testing until that model is ready.
-# Both are served over an OpenAI-compatible API. There is no deterministic
-# fallback engine: when no model is usable the gateway returns an explicit notice
-# rather than fabricating analysis.
-#
-# Default model id per provider (overridable per-org via model_override).
+# Active AI providers. The platform supports Vertex AI (Gemini), the in-house
+# trained GRC model, and Groq as an interim provider.
 PROVIDER_DEFAULT_MODEL = {
-    "groq": "llama-3.3-70b-versatile",   # interim, remove once "inhouse" is trained
-    "inhouse": "grc-auditor-v1",         # our own trained GRC model
+    "gemini":  "gemini-2.0-flash",           # Google Vertex AI
+    "groq":    "llama-3.3-70b-versatile",    # interim, remove once "inhouse" is trained
+    "inhouse": "grc-auditor-v1",             # our own trained GRC model
+    "claude":  "claude-3-5-sonnet-20241022", # Anthropic Claude
 }
 
 # Base URLs for the OpenAI-compatible providers (routed through agno's OpenAILike).
@@ -47,10 +51,20 @@ OPENAI_COMPATIBLE_BASE_URL = {
 
 OPENAI_COMPATIBLE = set(OPENAI_COMPATIBLE_BASE_URL.keys())
 
+# Vertex AI / Gemini uses its own SDK, not OpenAI-compatible.
+VERTEX_AI_PROVIDERS = {"gemini"}
+ANTHROPIC_PROVIDERS = {"claude"}
+
 PROVIDER_ENV_KEYS = {
-    "groq": "GROQ_API_KEY",
+    "gemini":  "GEMINI_API_KEY",
+    "groq":    "GROQ_API_KEY",
     "inhouse": "INHOUSE_API_KEY",   # optional: self-hosted endpoints may need no key
+    "claude":  "ANTHROPIC_API_KEY",
 }
+
+# Vertex AI configuration
+VERTEX_AI_PROJECT  = os.environ.get("VERTEX_AI_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
+VERTEX_AI_LOCATION = os.environ.get("VERTEX_AI_LOCATION", "us-central1")
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +102,8 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
 
     If the explicitly-active provider is the local engine (or unset) but an API
     key is available in the environment, transparently promote the preferred
-    real provider (in-house first, then Groq) so configured keys are used
-    automatically.
+    real provider (gemini first, then in-house, then Groq) so configured keys
+    are used automatically.
     """
     # Never operate on ownerless rows: coerce a missing org to the default company
     # so we read and write a single, consistent per-org provider set (bug C1).
@@ -99,11 +113,16 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
         return config
 
     # No active provider for this org: auto-activate one that has an environment
-    # key (in-house first, then Groq). Returns None when nothing is configured —
-    # callers then surface an honest "no model available" result rather than
-    # fabricating output.
-    # ponytail: prefer inhouse, else groq; inline until groq is retired
-    env_provider = "inhouse" if get_env_provider_key("inhouse") else ("groq" if get_env_provider_key("groq") else None)
+    # key. Priority: gemini > inhouse > groq.
+    env_provider = None
+    for pid in ("gemini", "claude", "inhouse", "groq"):
+        if get_env_provider_key(pid):
+            env_provider = pid
+            break
+    # Also check for Vertex AI Application Default Credentials (no key needed)
+    if not env_provider and VERTEX_AI_PROJECT:
+        env_provider = "gemini"
+
     if not env_provider:
         return None
     prov_config = db.query(AIProviderConfig).filter_by(id=env_provider, org_id=org_id).first()
@@ -123,15 +142,16 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
 # ---------------------------------------------------------------------------
 # Embeddings (for vector RAG)
 # ---------------------------------------------------------------------------
-# Embeddings are resolved independently of the chat provider (neither Groq nor
-# the in-house chat model serves embeddings). Preferred backend: the local
-# fine-tuned control-mapping encoder (EMBEDDING_MODEL_PATH, Phase-1 artifact);
-# hosted OpenAI/Gemini keys are a vectors-only fallback. None configured -> the
-# RAG layer transparently falls back to lexical search.
+# Embeddings are resolved independently of the chat provider. Preferred backend:
+# the local fine-tuned control-mapping encoder (EMBEDDING_MODEL_PATH, Phase-1
+# artifact); hosted Vertex AI, OpenAI, or Gemini keys are a vectors-only
+# fallback. None configured -> the RAG layer transparently falls back to
+# lexical search.
 
 EMBEDDING_PROVIDERS = [
-    ("openai", "OPENAI_API_KEY", "text-embedding-3-small", 1536),
-    ("gemini", "GEMINI_API_KEY", "text-embedding-004", 768),
+    ("vertex_ai", "VERTEX_AI_PROJECT", "text-embedding-005", 768),
+    ("openai",    "OPENAI_API_KEY",    "text-embedding-3-small", 1536),
+    ("gemini",    "GEMINI_API_KEY",    "text-embedding-004", 768),
 ]
 
 # Cached local sentence-transformers model (loaded once per process).
@@ -142,17 +162,27 @@ def get_embedding_config() -> Optional[dict]:
     """Resolve the active embedding backend.
 
     Preference: a local fine-tuned sentence-transformers model (the Phase-1
-    control-mapping encoder, via EMBEDDING_MODEL_PATH) > hosted keys > None.
+    control-mapping encoder, via EMBEDDING_MODEL_PATH) > Vertex AI > hosted
+    keys > None.
     """
     local_path = os.environ.get("EMBEDDING_MODEL_PATH", "").strip()
     if local_path:
         return {"provider": "local", "model": local_path, "api_key": None, "dim": None}
     for provider, env_name, model, dim in EMBEDDING_PROVIDERS:
-        key = os.environ.get(env_name, "").strip()
-        if key:
-            override = os.environ.get("EMBEDDING_MODEL", "").strip()
-            return {"provider": provider, "api_key": key,
-                    "model": override or model, "dim": dim}
+        if provider == "vertex_ai":
+            # Vertex AI uses ADC (Application Default Credentials), not API key
+            project = os.environ.get(env_name, "").strip()
+            if project:
+                override = os.environ.get("EMBEDDING_MODEL", "").strip()
+                return {"provider": "vertex_ai", "api_key": None,
+                        "model": override or model, "dim": dim,
+                        "project": project, "location": VERTEX_AI_LOCATION}
+        else:
+            key = os.environ.get(env_name, "").strip()
+            if key:
+                override = os.environ.get("EMBEDDING_MODEL", "").strip()
+                return {"provider": provider, "api_key": key,
+                        "model": override or model, "dim": dim}
     return None
 
 
@@ -180,6 +210,19 @@ def embed_texts(texts: list, config: Optional[dict] = None) -> Optional[list]:
                 from sentence_transformers import SentenceTransformer
                 _local_embedder = SentenceTransformer(config["model"])
             return [list(map(float, v)) for v in _local_embedder.encode(texts, normalize_embeddings=True)]
+        if provider == "vertex_ai":
+            from vertexai.language_models import TextEmbeddingModel
+            import vertexai
+            vertexai.init(project=config.get("project", VERTEX_AI_PROJECT),
+                         location=config.get("location", VERTEX_AI_LOCATION))
+            model = TextEmbeddingModel.from_pretrained(config["model"])
+            # Vertex AI batch limit is 250 texts
+            all_embeddings = []
+            for i in range(0, len(texts), 250):
+                batch = texts[i:i + 250]
+                embeddings = model.get_embeddings(batch)
+                all_embeddings.extend([list(e.values) for e in embeddings])
+            return all_embeddings
         if provider == "openai":
             from openai import OpenAI
             client = OpenAI(api_key=config["api_key"])
@@ -196,7 +239,7 @@ def embed_texts(texts: list, config: Optional[dict] = None) -> Optional[list]:
             resp = client.models.embed_content(model=model_id, contents=texts)
             return [list(e.values) for e in resp.embeddings]
     except Exception as e:
-        print(f"Embedding generation failed ({provider}): {e}. Falling back to lexical.")
+        logger.warning("Embedding generation failed (%s): %s. Falling back to lexical.", provider, e)
         return None
     return None
 
@@ -214,15 +257,29 @@ def embed_query(text: str) -> Optional[list]:
 # ---------------------------------------------------------------------------
 
 def _build_model(provider: str, api_key: Optional[str], config: AIProviderConfig):
-    """Construct an agno (OpenAI-compatible) model object for the provider, or None.
+    """Construct an agno model object for the provider, or None.
 
-    Both supported providers — Groq (interim) and the in-house trained model —
-    speak the OpenAI API, so a single OpenAILike adapter covers them. The in-house
-    provider returns None until its base_url is configured, so callers degrade to
-    the deterministic local fallback rather than erroring.
+    Supports three provider families:
+    - Vertex AI / Gemini — uses agno's Gemini adapter
+    - OpenAI-compatible (Groq, inhouse) — uses agno's OpenAILike adapter
     """
     model_id = (config.model_override if config and config.model_override
                 else PROVIDER_DEFAULT_MODEL.get(provider, "grc-auditor-v1"))
+
+    if provider in VERTEX_AI_PROVIDERS:
+        try:
+            from agno.models.google import Gemini
+            return Gemini(
+                id=model_id,
+                api_key=api_key or None,
+                vertexai=True,
+                project_id=VERTEX_AI_PROJECT or None,
+                location=VERTEX_AI_LOCATION or None,
+            )
+        except ImportError:
+            # Fallback: try google-genai direct
+            logger.warning("agno.models.google.Gemini not available, trying OpenAI-compatible fallback")
+            return None
 
     if provider in OPENAI_COMPATIBLE:
         from agno.models.openai.like import OpenAILike
@@ -230,6 +287,14 @@ def _build_model(provider: str, api_key: Optional[str], config: AIProviderConfig
         if not base_url:
             return None
         return OpenAILike(id=model_id, api_key=api_key or "not-needed", base_url=base_url)
+
+    if provider in ANTHROPIC_PROVIDERS:
+        try:
+            from agno.models.anthropic import Claude
+            return Claude(id=model_id, api_key=api_key)
+        except ImportError:
+            logger.warning("agno.models.anthropic.Claude not available")
+            return None
 
     return None
 
@@ -252,6 +317,9 @@ def _run_agent(prompt: str, system_instruction: Optional[str], provider: str,
 
 
 def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
+    # Vertex AI can use Application Default Credentials (ADC) — no key needed.
+    if provider in VERTEX_AI_PROVIDERS:
+        return bool(api_key or VERTEX_AI_PROJECT)
     # The in-house self-hosted endpoint may require no API key.
     if provider == "inhouse":
         return True
@@ -266,8 +334,8 @@ def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
 # deterministic "local evidence" engine that fabricates analysis — callers either
 # get a real model response or this explicit notice.
 MODEL_UNAVAILABLE_MESSAGE = (
-    "No AI model is currently available. Configure the in-house model "
-    "(or Groq for now) in Settings -> AI Gateway and try again."
+    "No AI model is currently available. Configure Gemini (Vertex AI), "
+    "the in-house model, or Groq in Settings → AI Gateway and try again."
 )
 
 
@@ -292,7 +360,7 @@ def generate_content(prompt: str, system_instruction: Optional[str] = None, org_
             return MODEL_UNAVAILABLE_MESSAGE
         return _run_agent(prompt, system_instruction, config.id, api_key, config)
     except Exception as e:
-        print(f"Error in AI Gateway: {str(e)}.")
+        logger.error("Error in AI Gateway: %s", e)
         return MODEL_UNAVAILABLE_MESSAGE
     finally:
         db.close()
@@ -313,7 +381,7 @@ def generate_structured_json(prompt: str, schema: dict, system_instruction: Opti
         raw_text = _run_agent(prompt + json_guideline, system_instruction, config.id, api_key, config)
         return parse_json_safely(raw_text)
     except Exception as e:
-        print(f"Error in AI Gateway JSON generation: {str(e)}.")
+        logger.error("Error in AI Gateway JSON generation: %s", e)
         return {}
     finally:
         db.close()
@@ -330,5 +398,5 @@ def parse_json_safely(text: str) -> dict:
             if start != -1 and end != -1:
                 return json.loads(text[start:end])
         except Exception as e:
-            print(f"Failed to parse JSON blocks: {str(e)}")
+            logger.warning("Failed to parse JSON blocks: %s", e)
     raise ValueError(f"Model output could not be parsed as JSON: {text}")

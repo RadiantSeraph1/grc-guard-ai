@@ -10,8 +10,10 @@ import {
 const PROVIDER_DESC = {
   inhouse: "Our own trained GRC model, served over an OpenAI-compatible endpoint (set its base URL).",
   groq: "Interim Groq hosted inference for testing until the in-house model is ready.",
+  gemini: "Google Vertex AI Gemini model. Requires project ID and location configuration.",
+  claude: "Anthropic Claude model for advanced reasoning.",
 };
-const NO_KEY_REQUIRED = ["inhouse"];
+const NO_KEY_REQUIRED = ["inhouse", "gemini"];
 const NEEDS_BASE_URL = ["groq", "inhouse"];
 
 const TABS = [
