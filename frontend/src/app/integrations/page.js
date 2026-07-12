@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Cloud, Key, Landmark, X, ShieldAlert, Server, Laptop, Plug,
+  Cloud, Key, Landmark, X, ShieldAlert, Server, Laptop, Plug, Upload,
 } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import {
@@ -38,10 +38,8 @@ export default function IntegrationsPage() {
   const [activeIntegration, setActiveIntegration] = useState(null);
   const [credValues, setCredValues] = useState({});
   const [fieldsMap, setFieldsMap] = useState({});
-  const [oauthIds, setOauthIds] = useState([]);
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
-  const [connectionMode, setConnectionMode] = useState("api");
 
   const fetchIntegrations = useCallback(async () => {
     try {
@@ -50,7 +48,6 @@ export default function IntegrationsPage() {
       try {
         const spec = await api.get("/api/integrations/fields");
         setFieldsMap(spec.fields || {});
-        setOauthIds(spec.oauth || []);
       } catch { /* form falls back to a generic token field */ }
     } catch {
       setIntegrations([]);
@@ -60,29 +57,11 @@ export default function IntegrationsPage() {
   }, [api]);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("status") === "success" && params.get("id")) {
-        window.history.replaceState({}, document.title, window.location.pathname);
-      }
-    }
     fetchIntegrations();
   }, [fetchIntegrations]);
 
   const handleConnect = async (e) => {
     e.preventDefault();
-
-    if (connectionMode === "oauth") {
-      try {
-        // The endpoint returns the vendor authorize URL as JSON; navigating the
-        // browser there avoids the CORS wall a fetch() redirect would hit.
-        const data = await api.get(`/api/integrations/${activeIntegration.id}/authorize`);
-        window.location.href = data.authorize_url;
-      } catch (err) {
-        alert(err instanceof ApiError ? err.message : `OAuth request failed: ${err.message}`);
-      }
-      return;
-    }
 
     const spec = fieldsMap[activeIntegration.id] || [];
     const payload = {};
@@ -253,38 +232,36 @@ export default function IntegrationsPage() {
       >
         {activeIntegration && (
           <>
-            {oauthIds.includes(activeIntegration.id) && (
-              <div className="flex border border-zinc-800 rounded-lg overflow-hidden text-xs">
-                {["api", "oauth"].map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setConnectionMode(mode)}
-                    className={cn(
-                      "flex-1 py-2 font-semibold cursor-pointer transition-colors border-zinc-800",
-                      mode === "api" && "border-r",
-                      connectionMode === mode ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
-                    )}
-                  >
-                    {mode === "api" ? "API Credentials" : "OAuth Web Connection"}
-                  </button>
-                ))}
-              </div>
-            )}
-
             <form onSubmit={handleConnect} className="space-y-4">
-              {connectionMode === "api" || !oauthIds.includes(activeIntegration.id) ? (
-                <div className="space-y-3">
+              <div className="space-y-3">
                   {(fieldsMap[activeIntegration.id] || [{ key: "token", label: "API token", secret: true }]).map((f) => (
                     <Field key={f.key} label={f.label + (f.required === false ? " (optional)" : "")}>
                       {f.multiline ? (
-                        <Textarea
-                          value={credValues[f.key] || ""}
-                          onChange={(e) => setCredValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
-                          placeholder={f.placeholder || ""}
-                          rows={4}
-                          className="font-mono resize-none"
-                        />
+                        <div className="space-y-2">
+                          <label className="flex items-center justify-center gap-2 text-xs text-zinc-500 hover:text-zinc-300 border border-dashed border-zinc-800 hover:border-zinc-700 rounded-lg py-2 cursor-pointer transition-colors">
+                            <Upload size={13} />
+                            {credValues[f.key] ? "Replace file…" : "Upload JSON key file"}
+                            <input
+                              type="file"
+                              accept=".json,application/json"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onload = () => setCredValues((prev) => ({ ...prev, [f.key]: reader.result }));
+                                reader.readAsText(file);
+                              }}
+                            />
+                          </label>
+                          <Textarea
+                            value={credValues[f.key] || ""}
+                            onChange={(e) => setCredValues((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                            placeholder={f.placeholder || "…or paste it here"}
+                            rows={4}
+                            className="font-mono resize-none"
+                          />
+                        </div>
                       ) : (
                         <Input
                           type={f.secret ? "password" : "text"}
@@ -300,22 +277,10 @@ export default function IntegrationsPage() {
                     <ShieldAlert size={14} className="shrink-0 text-amber-400 mt-0.5" />
                     <span>Credentials are encrypted with the server BYOK vault. Use read-only audit scopes only.</span>
                   </div>
-                </div>
-              ) : (
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-xs text-zinc-400 space-y-2">
-                  <div className="flex items-center gap-2 font-semibold text-zinc-200">
-                    <Cloud size={14} className="text-zinc-400" />
-                    OAuth &amp; web redirect mode
-                  </div>
-                  <p className="leading-relaxed">
-                    You&apos;ll be redirected to {activeIntegration.name} to authorize read-only access, then
-                    returned here. Prefer the API Credentials tab if you already have a token.
-                  </p>
-                </div>
-              )}
+              </div>
 
               <Button type="submit" variant="primary" loading={connecting} className="w-full">
-                {connecting ? "Verifying…" : connectionMode === "api" ? `Save ${activeIntegration.name} credentials` : "Authorize web connection"}
+                {connecting ? "Verifying…" : `Save ${activeIntegration.name} credentials`}
               </Button>
             </form>
           </>

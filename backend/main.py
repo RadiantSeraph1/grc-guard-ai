@@ -2193,10 +2193,9 @@ def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
 
 @app.get("/api/integrations/fields")
 def get_integration_fields(current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
-    """Per-connector credential field specs (drive the connect form) plus the
-    list of connectors that currently have OAuth configured by the operator."""
+    """Per-connector credential field specs that drive the connect form."""
     import integration_clients
-    return {"fields": integration_clients.CONNECTOR_FIELDS, "oauth": oauth_supported_ids()}
+    return {"fields": integration_clients.CONNECTOR_FIELDS, "oauth": []}
 
 @app.post("/api/integrations/{id}/sync")
 def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
@@ -2216,122 +2215,6 @@ def get_integration_logs(id: str, db: Session = Depends(database.get_db), curren
     level = "ERROR" if integration.status == "Error" else "SUCCESS"
     return [{"timestamp": integration.last_sync or int(time.time()), "level": level,
              "message": integration.last_audit_summary}]
-
-# OAuth app registry (dev-configured). To enable OAuth for a connector: register
-# an OAuth app with the vendor, set the two env vars, and add an entry here. Most
-# connectors use API keys / service accounts (machine-to-machine) and need NO
-# entry — they only ever use the API Credentials form. A provider is offered in
-# the UI only when its client id + secret are actually present at runtime.
-OAUTH_PROVIDERS = {
-    "github": {
-        "authorize_url": "https://github.com/login/oauth/authorize",
-        "token_url": "https://github.com/login/oauth/access_token",
-        "scope": "repo,read:org",
-        "client_id_env": "GITHUB_CLIENT_ID",
-        "client_secret_env": "GITHUB_CLIENT_SECRET",
-    },
-    # Template — fill the two envs and uncomment to enable Google Workspace OAuth:
-    # "google_workspace": {
-    #     "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-    #     "token_url": "https://oauth2.googleapis.com/token",
-    #     "scope": "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    #     "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
-    #     "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
-    #     "extra_authorize": {"access_type": "offline", "prompt": "consent"},
-    # },
-}
-
-
-def _oauth_config(provider_id: str) -> Optional[dict]:
-    """Return the OAuth spec merged with live credentials, or None if the dev
-    hasn't configured this provider's client id/secret."""
-    spec = OAUTH_PROVIDERS.get(provider_id)
-    if not spec:
-        return None
-    client_id = os.environ.get(spec["client_id_env"], "").strip()
-    client_secret = os.environ.get(spec["client_secret_env"], "").strip()
-    if not client_id or client_id.startswith("your_") or not client_secret:
-        return None
-    return {**spec, "client_id": client_id, "client_secret": client_secret}
-
-
-def oauth_supported_ids() -> list[str]:
-    return [pid for pid in OAUTH_PROVIDERS if _oauth_config(pid)]
-
-
-# OAuth redirects and callbacks for integrations
-@app.get("/api/integrations/{id}/authorize")
-def oauth_authorize(id: str, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    """Return the vendor authorize URL as JSON. The frontend navigates the browser
-    there — a fetch() cannot follow a cross-origin redirect into the vendor (CORS),
-    which is why this is not a RedirectResponse."""
-    from urllib.parse import urlencode
-    cfg = _oauth_config(id)
-    if not cfg:
-        raise HTTPException(status_code=400, detail=f"OAuth is not configured for {id}. Use API credentials for this system.")
-    api_base = os.environ.get("PUBLIC_API_BASE_URL", "http://localhost:8001").rstrip("/")
-    params = {
-        "client_id": cfg["client_id"],
-        "redirect_uri": f"{api_base}/api/integrations/{id}/callback",
-        "scope": cfg["scope"],
-        "state": current_user.org_id,
-        "response_type": "code",
-        **cfg.get("extra_authorize", {}),
-    }
-    return {"authorize_url": f"{cfg['authorize_url']}?{urlencode(params)}"}
-
-
-@app.get("/api/integrations/{id}/callback")
-def oauth_callback(id: str, code: str, state: str = DEFAULT_COMPANY_ID, db: Session = Depends(database.get_db)):
-    """Generic OAuth2 code->token exchange for any configured provider. Stores the
-    token as {"token": ...} JSON (same shape the connect form produces) so the sync
-    handler reads it identically. No control statuses are touched — OAuth only
-    proves we CAN audit; the verdict comes from running Sync."""
-    import httpx
-    import seed
-    import integration_clients
-    from fastapi.responses import RedirectResponse
-    cfg = _oauth_config(id)
-    if not cfg:
-        raise HTTPException(status_code=400, detail=f"OAuth callback is not available for {id}. Configure API credentials and run Sync.")
-
-    org_id = state or DEFAULT_COMPANY_ID
-    try:
-        seed.seed_org_data(db, org_id)
-    except Exception as e:
-        print(f"Error seeding organization {org_id} in callback: {str(e)}")
-        if not db.query(models.Organization).filter_by(id=org_id).first():
-            db.add(models.Organization(id=org_id, name=DEFAULT_COMPANY_NAME, created_at=int(time.time())))
-            db.commit()
-
-    api_base = os.environ.get("PUBLIC_API_BASE_URL", "http://localhost:8001").rstrip("/")
-    token = None
-    try:
-        res = httpx.post(cfg["token_url"], headers={"Accept": "application/json"},
-                         data={"client_id": cfg["client_id"], "client_secret": cfg["client_secret"],
-                               "code": code, "grant_type": "authorization_code",
-                               "redirect_uri": f"{api_base}/api/integrations/{id}/callback"},
-                         timeout=10.0)
-        if res.status_code == 200:
-            token = res.json().get("access_token")
-    except Exception as e:
-        print(f"{id} OAuth exchange failed: {str(e)}")
-    if not token:
-        raise HTTPException(status_code=400, detail=f"{id} OAuth exchange failed. No access token was returned.")
-
-    integration = db.query(models.Integration).filter_by(id=id, org_id=org_id).first()
-    if not integration:
-        entry = next((e for e in integration_clients.INTEGRATION_CATALOG if e["id"] == id), {})
-        integration = models.Integration(id=id, org_id=org_id, name=entry.get("name", id),
-                                          category=entry.get("category", "Integration"))
-        db.add(integration)
-    integration.status = "Configured"
-    integration.last_sync = int(time.time())
-    integration.credentials = security.encrypt_log(json.dumps({"token": token}), get_required_vault_key())
-    db.commit()
-
-    frontend_base = os.environ.get("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
-    return RedirectResponse(f"{frontend_base}/integrations?status=success&id={id}")
 
 # 4. Controls Monitoring
 @app.get("/api/controls")
