@@ -30,7 +30,16 @@ import models
 # Framework catalog
 # ---------------------------------------------------------------------------
 
+# Basel III leads the catalog: this is a banking-first GRC platform, so the core
+# banking standard is the recommended first import. The org is still provisioned
+# empty - nothing is auto-imported - but the library surfaces Basel III first.
 FRAMEWORK_LIBRARY = {
+    "basel-iii": {
+        "name": "Basel III",
+        "code": "BASEL-III",
+        "description": "Banking capital adequacy, stress testing, and liquidity requirements.",
+        "recommended": True,
+    },
     "soc-2": {
         "name": "SOC 2 Type II",
         "code": "SOC2",
@@ -56,11 +65,6 @@ FRAMEWORK_LIBRARY = {
         "code": "GDPR",
         "description": "EU General Data Protection Regulation for personal data processing.",
     },
-    "basel-iii": {
-        "name": "Basel III",
-        "code": "BASEL-III",
-        "description": "Banking capital adequacy, stress testing, and liquidity requirements.",
-    },
 }
 
 
@@ -81,50 +85,50 @@ CONTROL_LIBRARY = [
         "control_code": "SOC2-MFA-01",
         "title": "Multi-Factor Authentication Enforced",
         "description": "All workforce identities require a second authentication factor.",
-        "frameworks": ["soc-2", "iso-27001", "nist-csf", "pci-dss"],
-        "connectors": ["okta", "auth0", "entra", "google_workspace"],
+        "frameworks": ["soc-2", "iso-27001", "nist-csf", "pci-dss", "basel-iii"],
+        "connectors": ["google_workspace"],
     },
     {
         "control_code": "GDPR-PII-01",
         "title": "Encryption of Data at Rest",
         "description": "Customer and personal data stores are encrypted at rest.",
-        "frameworks": ["gdpr", "soc-2", "iso-27001", "pci-dss"],
-        "connectors": ["aws", "gcp", "azure"],
+        "frameworks": ["gdpr", "soc-2", "iso-27001", "pci-dss", "basel-iii"],
+        "connectors": ["gcp"],
     },
     {
-        "control_code": "GIT-BR-01",
-        "title": "Secure Change Management (Branch Protection)",
-        "description": "Code changes require peer review via protected branches before merge.",
-        "frameworks": ["soc-2", "iso-27001", "nist-csf"],
-        "connectors": ["github"],
+        "control_code": "BASEL-SOD-01",
+        "title": "Segregation of Duties (Maker-Checker)",
+        "description": "Privileged core-banking transactions require four-eyes maker-checker approval on the ledger.",
+        "frameworks": ["basel-iii", "soc-2", "iso-27001"],
+        "connectors": ["fineract"],
+    },
+    {
+        "control_code": "PCI-LOG-01",
+        "title": "Audit Logging & Monitoring",
+        "description": "Privileged actions on core systems and cardholder data are logged and reviewed (PCI Req 10 / Basel operational risk).",
+        "frameworks": ["pci-dss", "soc-2", "basel-iii"],
+        "connectors": ["fineract"],
+    },
+    {
+        "control_code": "EDR-01",
+        "title": "Endpoint Detection & Response Coverage",
+        "description": "Managed endpoints run an active EDR sensor.",
+        "frameworks": ["soc-2", "iso-27001", "nist-csf", "basel-iii"],
+        "connectors": ["wazuh"],
     },
     {
         "control_code": "VULN-01",
         "title": "Vulnerability Management",
         "description": "Open critical and high severity vulnerabilities are remediated in SLA.",
         "frameworks": ["soc-2", "iso-27001", "nist-csf", "pci-dss"],
-        "connectors": ["snyk"],
-    },
-    {
-        "control_code": "EDR-01",
-        "title": "Endpoint Detection & Response Coverage",
-        "description": "Managed endpoints run an active EDR sensor.",
-        "frameworks": ["soc-2", "iso-27001", "nist-csf"],
-        "connectors": ["crowdstrike"],
-    },
-    {
-        "control_code": "ENDPT-ENC-01",
-        "title": "Endpoint Disk Encryption",
-        "description": "Workstations enforce full-disk encryption (FileVault / BitLocker).",
-        "frameworks": ["iso-27001", "soc-2", "pci-dss"],
-        "connectors": ["jamf"],
+        "connectors": [],
     },
     {
         "control_code": "HR-ACC-01",
         "title": "Personnel Access Governance",
         "description": "Joiner/mover/leaver access is governed against the authoritative HR roster.",
         "frameworks": ["soc-2", "iso-27001"],
-        "connectors": ["workday"],
+        "connectors": [],
     },
     # --- Manually-evidenced controls (no automatic connector) ---
     {
@@ -146,13 +150,6 @@ CONTROL_LIBRARY = [
         "title": "Incident Response Plan",
         "description": "A tested incident response plan defines roles, severities, and notification timelines.",
         "frameworks": ["soc-2", "iso-27001", "nist-csf"],
-        "connectors": [],
-    },
-    {
-        "control_code": "PCI-LOG-01",
-        "title": "Audit Logging & Monitoring",
-        "description": "Access to cardholder data and systems is logged and reviewed (PCI Req 10).",
-        "frameworks": ["pci-dss", "soc-2"],
         "connectors": [],
     },
     {

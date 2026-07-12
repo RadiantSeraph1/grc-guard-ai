@@ -1,6 +1,8 @@
 "use client";
 
+import React from "react";
 import { Search as SearchIcon, X } from "lucide-react";
+import { Toaster as SonnerToaster, toast } from 'sonner';
 
 /**
  * Shared UI primitives for GRC Guard AI.
@@ -94,7 +96,7 @@ export function StatCard({ label, value, suffix, icon: Icon, accent = "zinc", de
       <div className="space-y-2 min-w-0">
         <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</span>
         <div className="flex items-baseline gap-1">
-          <span className="text-3xl font-semibold tracking-tight text-zinc-50 tabular-nums">{value}</span>
+          <AnimatedCounter value={value} className="text-3xl font-semibold tracking-tight text-zinc-50 tabular-nums" />
           {suffix && <span className="text-sm text-zinc-500">{suffix}</span>}
         </div>
         {delta && (
@@ -321,5 +323,287 @@ export function ProgressBar({ value = 0, className, tone = "accent" }) {
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
+  );
+}
+
+// ===== TOAST (sonner wrapper) =====
+
+export function Toaster() {
+  return (
+    <SonnerToaster
+      position="top-right"
+      toastOptions={{
+        duration: 4000,
+        className: 'glass-card-static',
+      }}
+      theme="dark"
+      richColors
+      closeButton
+    />
+  );
+}
+
+export { toast };
+
+// ===== ANIMATED COUNTER =====
+export function AnimatedCounter({ value, prefix = '', suffix = '', className = '' }) {
+  const [display, setDisplay] = React.useState(0);
+  
+  React.useEffect(() => {
+    const target = typeof value === 'number' ? value : parseInt(value) || 0;
+    if (target === 0) { setDisplay(0); return; }
+    const duration = 800;
+    const steps = 30;
+    const increment = target / steps;
+    let current = 0;
+    const timer = setInterval(() => {
+      current += increment;
+      if (current >= target) {
+        setDisplay(target);
+        clearInterval(timer);
+      } else {
+        setDisplay(Math.floor(current));
+      }
+    }, duration / steps);
+    return () => clearInterval(timer);
+  }, [value]);
+  
+  return <span className={`animate-count-up ${className}`}>{prefix}{display.toLocaleString()}{suffix}</span>;
+}
+
+// ===== GAUGE CHART =====
+export function GaugeChart({ value = 0, max = 100, size = 120, strokeWidth = 10, label = '', color = '#6366f1' }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const progress = Math.min(value / max, 1);
+  const offset = circumference * (1 - progress);
+  const percentage = Math.round(progress * 100);
+  
+  // Color based on percentage
+  const getColor = () => {
+    if (percentage >= 80) return '#10b981';
+    if (percentage >= 60) return '#f59e0b';
+    if (percentage >= 40) return '#f97316';
+    return '#ef4444';
+  };
+  
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg className="gauge-ring" width={size} height={size}>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="rgba(63, 63, 70, 0.3)"
+            strokeWidth={strokeWidth}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={color === 'auto' ? getColor() : color}
+            strokeWidth={strokeWidth}
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-bold text-zinc-100">{percentage}%</span>
+        </div>
+      </div>
+      {label && <span className="text-xs text-zinc-400 font-medium">{label}</span>}
+    </div>
+  );
+}
+
+// ===== DATA TABLE =====
+export function DataTable({ columns, data, searchable = true, searchPlaceholder = 'Search...', pageSize = 10, onRowClick, emptyMessage = 'No data found' }) {
+  const [search, setSearch] = React.useState('');
+  const [sortCol, setSortCol] = React.useState(null);
+  const [sortDir, setSortDir] = React.useState('asc');
+  const [page, setPage] = React.useState(0);
+  
+  const filteredData = React.useMemo(() => {
+    if (!search) return data;
+    const q = search.toLowerCase();
+    return data.filter(row =>
+      columns.some(col => {
+        const val = col.accessor ? (typeof col.accessor === 'function' ? col.accessor(row) : row[col.accessor]) : '';
+        return String(val).toLowerCase().includes(q);
+      })
+    );
+  }, [data, search, columns]);
+  
+  const sortedData = React.useMemo(() => {
+    if (!sortCol) return filteredData;
+    const col = columns.find(c => c.id === sortCol || c.accessor === sortCol);
+    if (!col) return filteredData;
+    return [...filteredData].sort((a, b) => {
+      const aVal = typeof col.accessor === 'function' ? col.accessor(a) : a[col.accessor];
+      const bVal = typeof col.accessor === 'function' ? col.accessor(b) : b[col.accessor];
+      const cmp = String(aVal).localeCompare(String(bVal), undefined, { numeric: true });
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [filteredData, sortCol, sortDir, columns]);
+  
+  const totalPages = Math.ceil(sortedData.length / pageSize);
+  const pageData = sortedData.slice(page * pageSize, (page + 1) * pageSize);
+  
+  const handleSort = (colId) => {
+    if (sortCol === colId) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortCol(colId);
+      setSortDir('asc');
+    }
+  };
+  
+  React.useEffect(() => setPage(0), [search]);
+  
+  return (
+    <div className="space-y-3">
+      {searchable && (
+        <div className="relative">
+          <input
+            type="text"
+            placeholder={searchPlaceholder}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full sm:w-80 px-4 py-2 pl-10 rounded-lg bg-zinc-900/60 border border-zinc-700/50 text-zinc-200 text-sm placeholder-zinc-500 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+          />
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+        </div>
+      )}
+      <div className="overflow-x-auto rounded-xl border border-zinc-800/50">
+        <table className="premium-table w-full">
+          <thead>
+            <tr>
+              {columns.map(col => (
+                <th
+                  key={col.id || col.accessor}
+                  onClick={() => col.sortable !== false && handleSort(col.id || col.accessor)}
+                  className={col.sortable === false ? 'cursor-default' : ''}
+                >
+                  <div className="flex items-center gap-1">
+                    {col.header}
+                    {sortCol === (col.id || col.accessor) && (
+                      <span className="text-indigo-400">{sortDir === 'asc' ? '↑' : '↓'}</span>
+                    )}
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageData.length === 0 ? (
+              <tr><td colSpan={columns.length} className="text-center py-8 text-zinc-500">{emptyMessage}</td></tr>
+            ) : (
+              pageData.map((row, i) => (
+                <tr
+                  key={row.id || i}
+                  onClick={() => onRowClick?.(row)}
+                  className={onRowClick ? 'cursor-pointer' : ''}
+                >
+                  {columns.map(col => (
+                    <td key={col.id || col.accessor}>
+                      {col.cell ? col.cell(row) : (typeof col.accessor === 'function' ? col.accessor(row) : row[col.accessor])}
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm text-zinc-400">
+          <span>Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, sortedData.length)} of {sortedData.length}</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              className="px-3 py-1.5 rounded-lg bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              ← Prev
+            </button>
+            <span className="px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 font-medium">
+              {page + 1} / {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              className="px-3 py-1.5 rounded-lg bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-700/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== TABS =====
+export function Tabs({ tabs, activeTab, onChange, className = '' }) {
+  return (
+    <div className={`flex gap-1 p-1 rounded-xl bg-zinc-900/50 border border-zinc-800/50 ${className}`}>
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          onClick={() => onChange(tab.id)}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+            activeTab === tab.id
+              ? 'bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 shadow-sm'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 border border-transparent'
+          }`}
+        >
+          {tab.icon && <span className="mr-2">{tab.icon}</span>}
+          {tab.label}
+          {tab.count !== undefined && (
+            <span className={`ml-2 px-1.5 py-0.5 rounded-full text-xs ${
+              activeTab === tab.id ? 'bg-indigo-500/20 text-indigo-300' : 'bg-zinc-800 text-zinc-500'
+            }`}>{tab.count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ===== TOOLTIP =====
+export function Tooltip({ children, content, position = 'top' }) {
+  const [show, setShow] = React.useState(false);
+  const positions = {
+    top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
+    bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
+    left: 'right-full top-1/2 -translate-y-1/2 mr-2',
+    right: 'left-full top-1/2 -translate-y-1/2 ml-2',
+  };
+  return (
+    <div className="relative inline-flex" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <div className={`absolute ${positions[position]} z-50 px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 whitespace-nowrap shadow-xl animate-scale-in`}>
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== PROGRESS RING =====
+export function ProgressRing({ value = 0, size = 40, strokeWidth = 3, color = '#6366f1' }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - Math.min(value / 100, 1));
+  return (
+    <svg width={size} height={size} className="gauge-ring">
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke="rgba(63,63,70,0.3)" strokeWidth={strokeWidth} />
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={color} strokeWidth={strokeWidth} strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" />
+    </svg>
   );
 }

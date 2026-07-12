@@ -350,6 +350,29 @@ def _usable_config(db, org_id):
     return config, api_key
 
 
+def get_brain_model(org_id: str = None):
+    """Return an instantiated agno model object based on the active provider."""
+    db = SessionLocal()
+    try:
+        config, api_key = _usable_config(db, org_id)
+        if not config:
+            return None
+        return _build_model(config.id, api_key, config)
+    finally:
+        db.close()
+
+
+def generate_content_for_config(prompt: str, config: AIProviderConfig, system_instruction: Optional[str] = None) -> str:
+    """Run a prompt against a SPECIFIC provider config, bypassing the org's
+    "active" provider selection. Used for base-model-selection benchmarking
+    (Ch.3 "base model selection via quantitative benchmarking"), which needs to
+    compare every configured provider, not just whichever one is active."""
+    api_key = get_decrypted_key(config)
+    if not _provider_usable(config.id, api_key):
+        raise ValueError(f"Provider '{config.id}' is not usable (no valid credentials).")
+    return _run_agent(prompt, system_instruction, config.id, api_key, config)
+
+
 def generate_content(prompt: str, system_instruction: Optional[str] = None, org_id: str = None) -> str:
     """Unified text generation routed through agno. Returns an explicit notice
     when no model is configured (never fabricated analysis)."""

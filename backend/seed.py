@@ -28,12 +28,21 @@ def run_light_migrations():
     """
     try:
         inspector = inspect(engine)
-        if "integrations" not in inspector.get_table_names():
-            return
-        cols = {c["name"] for c in inspector.get_columns("integrations")}
-        if "last_audit_summary" not in cols:
+        tables = inspector.get_table_names()
+
+        if "integrations" in tables:
+            cols = {c["name"] for c in inspector.get_columns("integrations")}
+            if "last_audit_summary" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_summary VARCHAR"))
+
+        if "vector_chunks" in tables:
+            cols = {c["name"] for c in inspector.get_columns("vector_chunks")}
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_summary VARCHAR"))
+                if "regulatory_version" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN regulatory_version VARCHAR"))
+                if "pii_redaction_count" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN pii_redaction_count INTEGER"))
     except Exception as e:
         print(f"Light migration skipped: {e}")
 

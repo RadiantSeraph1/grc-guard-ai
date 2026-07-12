@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grc-guard-ingress
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: ingress
+  annotations:
+    kubernetes.io/ingress.class: gce
+    networking.gke.io/managed-certificates: grc-guard-cert
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grc-backend
+                port:
+                  number: 8001
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grc-frontend
+                port:
+                  number: 3000

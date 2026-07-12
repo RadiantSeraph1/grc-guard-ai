@@ -1,54 +1,20 @@
 import os
 import re
-import sqlite3
 import json
 import csv
 import struct
 from pathlib import Path
 from pypdf import PdfReader
 from dotenv import load_dotenv
+from sqlalchemy import func
 
 # Load env variables
 load_dotenv()
 
-# The RAG corpus lives in its own SQLite file so it never shares a filename with
-# the SQLAlchemy ORM database (which previously also defaulted to
-# grc_database.db). Two access styles (raw sqlite3 here, SQLAlchemy there) on one
-# file was fragile; they are now fully separated. Override with RAG_DB_PATH.
-DB_PATH = os.environ.get("RAG_DB_PATH", "grc_rag_corpus.db")
+import models
+from database import SessionLocal
+
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
-
-def _rag_connect():
-    """Open the RAG corpus SQLite DB with WAL + a busy timeout (C4)."""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=30000;")
-    return conn
-
-def init_db():
-    """Initialize the SQLite database for company-scoped RAG chunks."""
-    conn = _rag_connect()
-    cursor = conn.cursor()
-    # Table for document chunks
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS document_chunks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            org_id TEXT,
-            filename TEXT,
-            page_number INTEGER,
-            content TEXT,
-            token_count INTEGER,
-            embedding BLOB
-        )
-    """)
-    # Light migration: older databases predate the embedding column.
-    cursor.execute("PRAGMA table_info(document_chunks)")
-    cols = {row[1] for row in cursor.fetchall()}
-    if "embedding" not in cols:
-        cursor.execute("ALTER TABLE document_chunks ADD COLUMN embedding BLOB")
-    conn.commit()
-    conn.close()
-
 
 # ---------------------------------------------------------------------------
 # Embedding (de)serialization + similarity
@@ -154,51 +120,83 @@ def chunk_text(text, chunk_size=500, overlap=100):
             chunks.append(chunk)
     return chunks
 
-def ingest_document(file_path, filename, org_id=DEFAULT_COMPANY_ID, source_type="reference", replace_existing=False):
+def anonymize_pii(text: str) -> tuple:
+    """GDPR-compliant anonymization of text before embedding.
+
+    Returns (redacted_text, redaction_count) so callers can record how many
+    redactions were applied per chunk - an auditor-facing count, not just a
+    silent transformation (Ch.3 Layer 1 "GDPR-compliant anonymization").
+    """
+    count = 0
+    # Redact Emails
+    text, n = re.subn(r'[\w\.-]+@[\w\.-]+\.\w+', '[REDACTED_EMAIL]', text)
+    count += n
+    # Redact SSNs / Credit Cards (basic)
+    text, n = re.subn(r'\b\d{3}-\d{2}-\d{4}\b', '[REDACTED_SSN]', text)
+    count += n
+    text, n = re.subn(r'\b(?:\d{4}[ -]?){3}\d{4}\b', '[REDACTED_CC]', text)
+    count += n
+    # Redact Phone Numbers
+    text, n = re.subn(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', '[REDACTED_PHONE]', text)
+    count += n
+    return text, count
+
+def ingest_document(file_path, filename, org_id=DEFAULT_COMPANY_ID, source_type="reference", replace_existing=False, effective_date=None, expiration_date=None, regulatory_version=None):
     """Parse and ingest supported documents into the target company knowledge base."""
-    init_db()
     pages = parse_document(file_path)
-    conn = _rag_connect()
-    cursor = conn.cursor()
     
-    # Check if already ingested for this company.
-    cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE filename = ? AND org_id = ?", (filename, org_id))
-    existing_count = cursor.fetchone()[0]
-    if existing_count > 0 and not replace_existing:
-        conn.close()
-        return f"File '{filename}' already ingested."
-    if existing_count > 0 and replace_existing:
-        cursor.execute("DELETE FROM document_chunks WHERE filename = ? AND org_id = ?", (filename, org_id))
-        
-    # Build all enriched chunks first so embeddings can be computed in one batch.
-    rows = []  # (page_num, enriched_chunk, token_est)
-    for page_num, content in pages:
-        # We chunk each page if it's too long
-        chunks = chunk_text(content, chunk_size=300, overlap=50)
-        for chunk in chunks:
-            token_est = len(chunk.split())  # Estimate tokens as words
-            enriched_chunk = f"[Source Type: {source_type}]\n{chunk}"
-            rows.append((page_num, enriched_chunk, token_est))
+    db = SessionLocal()
+    try:
+        # Check if already ingested for this company.
+        existing_count = db.query(models.VectorChunk).filter_by(filename=filename, org_id=org_id).count()
+        if existing_count > 0 and not replace_existing:
+            return f"File '{filename}' already ingested."
+        if existing_count > 0 and replace_existing:
+            db.query(models.VectorChunk).filter_by(filename=filename, org_id=org_id).delete()
+            db.commit()
+            
+        # Build all enriched chunks first so embeddings can be computed in one batch.
+        rows = []  # (page_num, enriched_chunk, redaction_count)
+        total_redactions = 0
+        for page_num, content in pages:
+            # We chunk each page if it's too long
+            chunks = chunk_text(content, chunk_size=300, overlap=50)
+            for chunk in chunks:
+                clean_chunk, redactions = anonymize_pii(chunk)
+                total_redactions += redactions
+                enriched_chunk = f"[Source Type: {source_type}]\n{clean_chunk}"
+                rows.append((page_num, enriched_chunk, redactions))
 
-    # Vectorize the chunk texts. Falls back to None (lexical-only) when no
-    # embedding provider is configured or the call fails.
-    embeddings = _embed_chunks([r[1] for r in rows]) if rows else None
+        # Vectorize the chunk texts. Falls back to None (lexical-only) when no
+        # embedding provider is configured or the call fails.
+        embeddings = _embed_chunks([r[1] for r in rows]) if rows else None
 
-    inserted_count = 0
-    for idx, (page_num, enriched_chunk, token_est) in enumerate(rows):
-        blob = None
-        if embeddings and idx < len(embeddings):
-            blob = _pack_embedding(embeddings[idx])
-        cursor.execute(
-            "INSERT INTO document_chunks (org_id, filename, page_number, content, token_count, embedding) VALUES (?, ?, ?, ?, ?, ?)",
-            (org_id, filename, page_num, enriched_chunk, token_est, blob)
-        )
-        inserted_count += 1
+        inserted_count = 0
+        for idx, (page_num, enriched_chunk, redactions) in enumerate(rows):
+            blob = None
+            if embeddings and idx < len(embeddings):
+                blob = _pack_embedding(embeddings[idx])
 
-    conn.commit()
-    conn.close()
-    mode = "semantic+lexical" if embeddings else "lexical"
-    return f"Successfully ingested {inserted_count} chunks ({mode}) from '{filename}' for company {org_id}."
+            chunk_record = models.VectorChunk(
+                org_id=org_id,
+                filename=filename,
+                page_number=page_num,
+                content=enriched_chunk,
+                embedding=blob,
+                effective_date=effective_date,
+                expiration_date=expiration_date,
+                regulatory_version=regulatory_version,
+                pii_redaction_count=redactions
+            )
+            db.add(chunk_record)
+            inserted_count += 1
+
+        db.commit()
+        mode = "semantic+lexical" if embeddings else "lexical"
+        redaction_note = f", {total_redactions} PII redaction(s) applied" if total_redactions else ""
+        return f"Successfully ingested {inserted_count} chunks ({mode}) from '{filename}' for company {org_id}{redaction_note}."
+    finally:
+        db.close()
 
 def ingest_pdf(file_path, filename, org_id=DEFAULT_COMPANY_ID):
     """Backward-compatible PDF ingestion wrapper."""
@@ -206,27 +204,28 @@ def ingest_pdf(file_path, filename, org_id=DEFAULT_COMPANY_ID):
 
 def corpus_stats(org_id=DEFAULT_COMPANY_ID):
     """Return corpus counts and source-level chunk distribution."""
-    init_db()
-    conn = _rag_connect()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT filename, COUNT(*), SUM(token_count), MAX(page_number) FROM document_chunks WHERE org_id = ? GROUP BY filename ORDER BY filename",
-        (org_id,)
-    )
-    sources = [
-        {
-            "filename": row[0],
-            "chunks": row[1],
-            "token_estimate": row[2] or 0,
-            "sections": row[3] or 0
-        }
-        for row in cursor.fetchall()
-    ]
-    cursor.execute("SELECT COUNT(*), COALESCE(SUM(token_count), 0) FROM document_chunks WHERE org_id = ?", (org_id,))
-    total_chunks, total_tokens = cursor.fetchone()
-    cursor.execute("SELECT COUNT(*) FROM document_chunks WHERE org_id = ? AND embedding IS NOT NULL", (org_id,))
-    embedded_chunks = cursor.fetchone()[0]
-    conn.close()
+    db = SessionLocal()
+    try:
+        sources_query = db.query(
+            models.VectorChunk.filename,
+            func.count(models.VectorChunk.id).label('chunks'),
+            func.max(models.VectorChunk.page_number).label('sections')
+        ).filter_by(org_id=org_id).group_by(models.VectorChunk.filename).all()
+        
+        sources = [
+            {
+                "filename": row.filename,
+                "chunks": row.chunks,
+                "token_estimate": 0, # Tokens no longer stored in DB, ignore
+                "sections": row.sections or 0
+            }
+            for row in sources_query
+        ]
+        
+        total_chunks = db.query(models.VectorChunk).filter_by(org_id=org_id).count()
+        embedded_chunks = db.query(models.VectorChunk).filter(models.VectorChunk.org_id == org_id, models.VectorChunk.embedding.isnot(None)).count()
+    finally:
+        db.close()
 
     embeddings_active = False
     try:
@@ -241,7 +240,7 @@ def corpus_stats(org_id=DEFAULT_COMPANY_ID):
         "total_sources": len(sources),
         "total_chunks": total_chunks,
         "embedded_chunks": embedded_chunks,
-        "token_estimate": total_tokens,
+        "token_estimate": 0,
         "search_mode": "semantic" if (embeddings_active and embedded_chunks > 0) else "lexical",
         "embeddings_available": embeddings_active,
     }
@@ -254,12 +253,21 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
     signal. Otherwise it degrades to the lexical scorer so the corpus remains
     searchable offline. The returned shape is unchanged for all callers.
     """
-    init_db()
-    conn = _rag_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, filename, page_number, content, embedding FROM document_chunks WHERE org_id = ?", (org_id,))
-    all_chunks = cursor.fetchall()
-    conn.close()
+    db = SessionLocal()
+    try:
+        from datetime import date
+        today_str = date.today().isoformat()
+        all_chunks = (
+            db.query(models.VectorChunk)
+            .filter_by(org_id=org_id)
+            .filter(
+                (models.VectorChunk.expiration_date == None) |
+                (models.VectorChunk.expiration_date >= today_str)
+            )
+            .all()
+        )
+    finally:
+        db.close()
 
     if not all_chunks:
         return []
@@ -275,7 +283,7 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
 
     # Attempt a semantic query embedding. None -> lexical-only path.
     query_vec = None
-    has_vectors = any(row[4] for row in all_chunks)
+    has_vectors = any(row.embedding for row in all_chunks)
     if has_vectors:
         try:
             import ai_gateway
@@ -298,12 +306,12 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
         scored = []
         max_lex = 1
         prelim = []
-        for chunk_id, filename, page_num, content, emb in all_chunks:
-            vec = _unpack_embedding(emb)
+        for chunk in all_chunks:
+            vec = _unpack_embedding(chunk.embedding)
             sim = _cosine(query_vec, vec) if vec else 0.0
-            lex = lexical_score(content.lower())
+            lex = lexical_score(chunk.content.lower())
             max_lex = max(max_lex, lex)
-            prelim.append((chunk_id, filename, page_num, content, sim, lex))
+            prelim.append((chunk.id, chunk.filename, chunk.page_number, chunk.content, sim, lex))
         for chunk_id, filename, page_num, content, sim, lex in prelim:
             # Blend: semantic dominates, lexical overlap is a light tie-breaker.
             blended = round(0.85 * sim + 0.15 * (lex / max_lex), 6)
@@ -321,24 +329,20 @@ def search_documents(query, org_id=DEFAULT_COMPANY_ID, limit=5):
     # --- Lexical-only path ---
     if not query_words:
         # fallback to returning the first few chunks
-        return [{"id": c[0], "filename": c[1], "page_number": c[2], "content": c[3], "score": 1.0} for c in all_chunks[:limit]]
+        return [{"id": c.id, "filename": c.filename, "page_number": c.page_number, "content": c.content, "score": 1.0} for c in all_chunks[:limit]]
 
     scored_chunks = []
-    for chunk_id, filename, page_num, content, _emb in all_chunks:
-        score = lexical_score(content.lower())
+    for chunk in all_chunks:
+        score = lexical_score(chunk.content.lower())
         if score > 0:
             scored_chunks.append({
-                "id": chunk_id,
-                "filename": filename,
-                "page_number": page_num,
-                "content": content,
+                "id": chunk.id,
+                "filename": chunk.filename,
+                "page_number": chunk.page_number,
+                "content": chunk.content,
                 "score": score
             })
 
     # Sort by score descending
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
     return scored_chunks[:limit]
-
-# Initialize the RAG corpus schema on import. The corpus starts EMPTY - no
-# regulations are seeded. Documents are added via /api/ingest.
-init_db()

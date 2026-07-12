@@ -1,31 +1,21 @@
 # Connecting Integrations
 
-Every connector runs a **real, read-only audit** against a live vendor API. You
-supply credentials in the app (**Integrations → pick a connector → Connect**);
-they are encrypted in the BYOK vault and decrypted only at sync time. You do
-**not** put these in `.env` — that's only a dev fallback. The one exception is
-OAuth *app* credentials (see the GitHub OAuth note), which are developer-level
-and live in `.env`.
+This is a **banking-first** GRC platform, so the connector set is deliberately
+small and banking-relevant. Every connector runs a **real, read-only audit**
+against a live API. You supply credentials in the app (**Integrations → pick a
+connector → Connect**); they are encrypted in the BYOK vault and decrypted only
+at sync time. `.env` is only a dev fallback.
 
-For each connector below: create a **read-only** credential in the vendor, paste
-the listed fields into the connect form, then click **Sync**.
+| Connector | What it proves | Access |
+|-----------|----------------|--------|
+| Google Cloud Platform | Encryption at rest, no public buckets, no SSH/RDP exposure | Live GCP service account |
+| Google Workspace | MFA (2-Step Verification) enrollment | Live Workspace service account |
+| Apache Fineract | Core-banking segregation of duties + audit trail | Self-hosted (open source) |
+| Wazuh | Endpoint/EDR sensor coverage | Self-hosted (open source) |
 
 > Use least-privilege, read-only scopes everywhere. These audits never write.
 
 ---
-
-## AWS — account security posture
-**Audits (CIS-style, read-only):** root-account MFA, an IAM password policy,
-EBS default encryption, security groups exposing SSH/RDP to `0.0.0.0/0`,
-CloudTrail enabled, and optionally a named S3 bucket's encryption. Aggregated
-into one verdict (compliant only when all checks pass).
-1. AWS Console → **IAM → Users → Create user** (or reuse a machine user).
-2. Attach the AWS-managed **`SecurityAudit`** policy (read-only across services). Narrower alternative: `ReadOnlyAccess`.
-3. **Security credentials → Create access key** → copy the key + secret.
-
-Fields: `aws_access_key_id`, `aws_secret_access_key`, `region` (optional, default `us-east-1`), `bucket_name` (optional).
-
-> EC2 and CloudTrail checks cover the chosen **region** only; multi-region trails still show up.
 
 ## GCP — project security posture
 **Audits (read-only):** every GCS bucket enforces public-access prevention, no
@@ -38,40 +28,6 @@ encryption. Aggregated into one verdict.
 
 Fields: `service_account_json` (paste the whole JSON), `project_id`, `bucket_name` (optional).
 
-## Azure — subscription security posture
-**Audits (read-only):** every storage account enforces HTTPS-only + encryption,
-and no network security group allows the Internet inbound to SSH/RDP. Aggregated
-into one verdict.
-1. **Entra ID → App registrations → New registration**.
-2. **Certificates & secrets → New client secret** → copy the value.
-3. **Subscription → Access control (IAM)** → assign the app the **Reader** role on the whole subscription.
-4. Note **tenant ID** (app Overview) and **subscription ID**.
-
-Fields: `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group` (optional), `account_name` (optional).
-
-## Okta — identity posture
-**Audits:** every active user has an MFA factor, an active password policy exists, and no active account is dormant (>90d since login).
-1. Okta Admin → **Security → API → Tokens → Create token** (created by a read-only admin so it can read policies) → copy it.
-2. Your org URL is `https://<your-org>.okta.com`.
-
-Fields: `org_url`, `token`.
-
-## Auth0 — MFA (Guardian) enrollment
-**Audits:** every directory user has confirmed MFA enrollment.
-1. Auth0 Dashboard → **Applications → Create** → **Machine to Machine**.
-2. Authorize it for the **Auth0 Management API** with scopes `read:users`, `read:logs`, `read:roles`.
-3. Copy **Domain**, **Client ID**, **Client Secret**.
-
-Fields: `domain`, `client_id`, `client_secret`.
-
-## Microsoft Entra ID — identity posture
-**Audits:** every enabled user has a strong (non-password) auth method, and the tenant's security-defaults baseline MFA is enforced.
-1. **Entra ID → App registrations → New registration**.
-2. **API permissions → Add → Microsoft Graph → Application permissions**: `User.Read.All`, `UserAuthenticationMethod.Read.All`, `Policy.Read.All` → **Grant admin consent**.
-3. **Certificates & secrets → New client secret**.
-
-Fields: `tenant_id`, `client_id`, `client_secret`.
-
 ## Google Workspace — identity posture
 **Audits:** all active users enrolled in 2SV, every admin enrolled in 2SV, and no active account dormant (>90d).
 1. Create a GCP **service account** and **enable domain-wide delegation** (note its client ID).
@@ -81,54 +37,64 @@ Fields: `tenant_id`, `client_id`, `client_secret`.
 
 Fields: `service_account_json`, `admin_email`.
 
-## GitHub — repository security posture
-**Audits:** branch protection, Dependabot alerts, secret scanning, visibility.
+## Apache Fineract — core-banking control posture
+Apache Fineract is a real open-source core-banking ledger. Self-host it, then the
+connector audits three banking governance controls (read-only):
+- **Maker-checker (four-eyes)** approval is enabled globally,
+- a **strong password policy** is active,
+- the **audit trail** is populated (privileged actions are logged).
 
-**Option A — Personal Access Token (simplest):**
-1. GitHub → **Settings → Developer settings → Personal access tokens** → generate a token with `repo` + `read:org`.
+**Stand it up (Docker):**
+```bash
+git clone https://github.com/apache/fineract.git
+cd fineract
+docker compose up -d          # builds Fineract + its database
+```
+The API comes up at `https://localhost:8443/fineract-provider/api/v1` with a
+**self-signed certificate** (the connector skips TLS verification by default).
+Default tenant is `default`; the default seed login is `mifos` / `password`.
 
-Fields: `token`, `owner`, `repo`, `branch` (optional, defaults `main`).
+**Create a read-only API user (recommended):**
+1. Log in to the Community App (or via API) as an admin.
+2. **Admin → Users → Roles** → create a role granting only `READ`/checker
+   permissions (no maker/create/update).
+3. **Admin → Users** → create a user with that role → use it below.
 
-**Option B — OAuth (developer setup, enables the "OAuth Web Connection" tab):**
-1. GitHub → **Settings → Developer settings → OAuth Apps → New OAuth App**.
-2. **Authorization callback URL:** `http://localhost:8001/api/integrations/github/callback`
-   (match `PUBLIC_API_BASE_URL`).
-3. Put the app's **Client ID/Secret** in `.env` as `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`.
-4. Users then click **OAuth Web Connection → Authorize**. With no owner/repo given, the sync audits the token's most recently active repos.
+Fields: `base_url` (e.g. `https://localhost:8443`), `username`, `password`, `tenant` (optional, default `default`).
 
-## Snyk — open vulnerabilities
-**Audits:** open critical/high vulns across the org's projects.
-1. Snyk → **Account settings → General → Auth Token** (or a service account token).
-2. **Organization settings → Organization ID**.
+## Wazuh — endpoint / EDR posture
+Wazuh is a real open-source EDR/XDR. Self-host the manager, enroll at least one
+agent, then the connector audits (read-only):
+- **sensor coverage** — every enrolled agent (excluding the manager) is active,
+- **no outdated agents** on a stale sensor version,
+- the **security manager** daemons are all running.
 
-Fields: `token`, `org_id`.
+**Stand it up (Docker, single-node):**
+```bash
+git clone https://github.com/wazuh/wazuh-docker.git -b v4.9.0
+cd wazuh-docker/single-node
+docker compose -f generate-indexer-certs.yml run --rm generator
+docker compose up -d
+```
+The server API listens on `https://localhost:55000` (self-signed cert). Then
+**enroll an agent** on a machine you want monitored (see the Wazuh "Deploying
+agents" docs) so there is coverage data to audit.
 
-## CrowdStrike Falcon — sensor coverage
-**Audits:** all hosts report full sensor functionality.
-1. Falcon console → **Support → API Clients & Keys → Create API client** with scope **Hosts: Read**.
-2. Copy client ID/secret; set the base URL for your cloud (US-1 `https://api.crowdstrike.com`, US-2 `https://api.us-2.crowdstrike.com`, EU `https://api.eu-1.crowdstrike.com`).
+**Create a read-only API user:**
+1. Wazuh dashboard → **Server management → Security → Users**.
+2. Create a user and assign the built-in **read-only** role/policy.
 
-Fields: `client_id`, `client_secret`, `base_url` (optional, defaults US-1).
-
-## Jamf Pro — FileVault disk encryption
-**Audits:** all managed Macs report FileVault encryption.
-1. Jamf Pro → **Settings → API roles and clients → API Roles** → create a role with **Read Computer Inventory**.
-2. **API Clients** → create a client, assign the role → copy client ID/secret.
-3. Base URL is `https://yourorg.jamfcloud.com`.
-
-Fields: `base_url`, `client_id`, `client_secret`.
-
-## Workday — active worker roster
-**Audits:** worker records are retrievable (roster sync).
-1. Build a **RaaS** (Report-as-a-Service) report, enable **Web Service** output, copy the **JSON** URL.
-2. Create an **Integration System User (ISU)** with GET access to that report.
-
-Fields: `report_url`, `username`, `password`.
+Fields: `base_url` (e.g. `https://localhost:55000`), `username`, `password`.
 
 ---
 
 ## After connecting
 Click **Sync**. The audit runs against the live API and flips every imported
 framework control this connector maps to (Passing/Failing) — no manual data
-entry. An empty result (e.g. 0 users, 0 repos) reports **non-compliant**, not a
+entry. An empty result (e.g. 0 agents, 0 users) reports **non-compliant**, not a
 false green.
+
+Connector → control mapping: GCP → *Encryption of Data at Rest*; Google
+Workspace → *Multi-Factor Authentication*; Fineract → *Segregation of Duties
+(Maker-Checker)* + *Audit Logging & Monitoring*; Wazuh → *Endpoint Detection &
+Response Coverage*.

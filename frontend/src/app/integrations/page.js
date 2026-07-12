@@ -13,18 +13,10 @@ import {
 // Per-connector presentation + credential hints. Connectors themselves come from
 // the backend catalog (/api/integrations); this only drives icons/help text.
 const CONNECTOR_META = {
-  aws: "Audits account posture: root MFA, IAM password policy, EBS encryption, SSH/RDP exposure, CloudTrail.",
   gcp: "Audits project posture: bucket public-access prevention and SSH/RDP firewall exposure.",
-  azure: "Audits subscription posture: storage HTTPS/encryption and NSG SSH/RDP exposure.",
-  okta: "Audits identity posture: MFA enrollment, password policy, and dormant accounts.",
-  auth0: "Audits directory users, MFA Guardian enrollment, login logs, and roles.",
-  entra: "Audits identity posture: strong-auth registration and security-defaults baseline MFA.",
   google_workspace: "Audits identity posture: 2SV for all users, 2SV for admins, and dormant accounts.",
-  github: "Audits repo security posture: branch protection, Dependabot alerts, secret scanning, visibility.",
-  snyk: "Audits open critical/high vulnerabilities across monitored projects.",
-  crowdstrike: "Audits endpoint sensor coverage and detection posture.",
-  jamf: "Validates managed Mac enrollment and FileVault disk encryption.",
-  workday: "Syncs active worker roster via a RaaS report endpoint.",
+  fineract: "Audits core-banking controls on the ledger: maker-checker (four-eyes) approval, password policy, and audit trail.",
+  wazuh: "Audits endpoint/EDR posture: agent sensor coverage, outdated agents, and security manager health.",
 };
 const descFor = (id) => CONNECTOR_META[id] || "Connect this system to pull live compliance evidence.";
 

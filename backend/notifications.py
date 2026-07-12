@@ -2,7 +2,6 @@
 
 Notifications are generated from platform events:
   * drift  - a control regressed (written from the connector->control bridge)
-  * overdue_task - a remediation task passed its due date (generated on read)
 
 ``create_notification`` dedups on (type, related_id) against existing unread
 rows so repeated syncs / list calls don't spam the feed.
@@ -63,34 +62,3 @@ def notify_drift(db: Session, org_id: str, control_code: str, control_title: str
     )
 
 
-def generate_overdue_task_notifications(db: Session, org_id: str) -> int:
-    """Create notifications for remediation tasks that are overdue and not done.
-    Idempotent via dedup on the task id."""
-    now = int(time.time())
-    overdue = (
-        db.query(models.RemediationTask)
-        .filter(
-            models.RemediationTask.org_id == org_id,
-            models.RemediationTask.status != "Done",
-            models.RemediationTask.due_date.isnot(None),
-            models.RemediationTask.due_date < now,
-        )
-        .all()
-    )
-    made = 0
-    for t in overdue:
-        note = create_notification(
-            db, org_id,
-            type="overdue_task",
-            severity="warning",
-            title=f"Overdue task: {t.title}",
-            message=f"Remediation task is past its due date ({t.priority} priority).",
-            link="/tasks",
-            related_id=f"task:{t.id}",
-            commit=False,
-        )
-        if note:
-            made += 1
-    if made:
-        db.commit()
-    return made

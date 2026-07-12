@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { RotateCw, HelpCircle, Eye, ShieldAlert, Cpu, Clipboard } from "lucide-react";
+import { RotateCw, HelpCircle, Eye, ShieldAlert, Cpu, Clipboard, ThumbsUp, ThumbsDown, FlaskConical } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button,
@@ -15,12 +15,19 @@ export default function ScannerPage() {
   const [byokKey, setByokKey] = useState("");
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
+  const [feedbackSent, setFeedbackSent] = useState(null); // "up" | "down" | null
+  const [limeLoading, setLimeLoading] = useState(false);
+  const [limeResult, setLimeResult] = useState(null);
+  const [limeError, setLimeError] = useState(null);
 
   const handleScan = async (e) => {
     e.preventDefault();
     if (!scanText.trim()) return;
     setScanning(true);
     setResult(null);
+    setFeedbackSent(null);
+    setLimeResult(null);
+    setLimeError(null);
     try {
       const data = await api.post("/api/scan", {
         text: scanText,
@@ -32,6 +39,37 @@ export default function ScannerPage() {
       alert("Failed to scan. Backend offline.");
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleFeedback = async (rating) => {
+    if (!result || feedbackSent) return;
+    setFeedbackSent(rating);
+    try {
+      await api.post("/api/feedback", {
+        source: "scan",
+        input_text: scanText,
+        output_decision: result.decision,
+        output_explanation: result.justification?.reasoning || "",
+        rating,
+      });
+    } catch {
+      setFeedbackSent(null); // let them retry if the call failed
+    }
+  };
+
+  const handleLimeExplain = async () => {
+    if (!scanText.trim()) return;
+    setLimeLoading(true);
+    setLimeError(null);
+    setLimeResult(null);
+    try {
+      const data = await api.post("/api/xai/lime-explain", { text: scanText, perspective });
+      setLimeResult(data);
+    } catch (err) {
+      setLimeError(err.message || "LIME explanation failed.");
+    } finally {
+      setLimeLoading(false);
     }
   };
 
@@ -144,7 +182,7 @@ export default function ScannerPage() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <MetricTile label="Decision Confidence" value={confidencePct != null ? `${confidencePct}%` : "—"} hint="Signal + RAG consistency" />
                 <MetricTile label="Top Signal" value={topSignal || "None"} hint="Highest local attribution" truncate />
-                <MetricTile label="Auditor Mode" value="Explainable" hint="Reasoning + remediation included" />
+                <MetricTile label="Auditor Mode" value="Explainable" hint="Detailed reasoning included" />
               </div>
 
               {/* Justification */}
@@ -163,11 +201,83 @@ export default function ScannerPage() {
                 <div className="space-y-3 text-sm leading-relaxed text-zinc-300">
                   <ReportField label="Summary" text={result.justification?.summary} />
                   <ReportField label="Reasoning" text={result.justification?.reasoning} />
-                  <div>
-                    <span className="font-semibold text-zinc-500 block uppercase tracking-wide text-xs mb-1">Remediation Guidance</span>
-                    <p className="text-zinc-300 font-mono text-xs bg-zinc-900 border border-zinc-800 p-2.5 rounded">{result.justification?.remediation}</p>
-                  </div>
                 </div>
+              </div>
+
+              {/* Auditor feedback — data collection for future DPO/RLHF fine-tuning */}
+              <div className="flex items-center justify-between gap-3 bg-[#09090b] border border-zinc-800 rounded-xl p-3">
+                <span className="text-xs text-zinc-500">Was this verdict correct?</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!!feedbackSent}
+                    onClick={() => handleFeedback("up")}
+                    className={cn(
+                      "p-1.5 rounded-lg border transition-colors",
+                      feedbackSent === "up" ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-400" : "border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-700",
+                      feedbackSent && feedbackSent !== "up" ? "opacity-40" : ""
+                    )}
+                    title="Correct"
+                  >
+                    <ThumbsUp size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!!feedbackSent}
+                    onClick={() => handleFeedback("down")}
+                    className={cn(
+                      "p-1.5 rounded-lg border transition-colors",
+                      feedbackSent === "down" ? "bg-rose-500/20 border-rose-500/40 text-rose-400" : "border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-700",
+                      feedbackSent && feedbackSent !== "down" ? "opacity-40" : ""
+                    )}
+                    title="Incorrect"
+                  >
+                    <ThumbsDown size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Opt-in real LIME — separate from the automatic attribution heatmap above,
+                  which is IR/relevance-based, not perturbation LIME. */}
+              <div className="space-y-2">
+                <Button
+                  icon={FlaskConical}
+                  loading={limeLoading}
+                  onClick={handleLimeExplain}
+                  className="w-full"
+                >
+                  {limeLoading ? "Running perturbation LIME (multiple model calls)…" : "Explain with real LIME (verified)"}
+                </Button>
+                {limeError && (
+                  <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">{limeError}</p>
+                )}
+                {limeResult && (
+                  <div className="bg-[#09090b] border border-indigo-500/30 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wide">
+                        Perturbation-Based LIME — Verified
+                      </span>
+                      <span className="text-xs text-zinc-500">{limeResult.candidates_tested} tokens tested</span>
+                    </div>
+                    <p className="text-xs text-zinc-500">
+                      Model&apos;s own baseline: <strong className="text-zinc-300">{limeResult.baseline_decision}</strong> ({limeResult.baseline_violation_confidence}% violation confidence). Each row below removed that token and re-queried the live model.
+                    </p>
+                    <div className="divide-y divide-zinc-800/60">
+                      {limeResult.attributions?.map((attr, idx) => (
+                        <div key={idx} className="py-2 flex items-start justify-between gap-3">
+                          <div>
+                            <span className="font-mono text-sm text-zinc-200">{attr.feature}</span>
+                            {attr.decision_flip && (
+                              <Badge variant="danger" className="ml-2">Flipped decision</Badge>
+                            )}
+                            <p className="text-xs text-zinc-500 mt-0.5">{attr.explanation}</p>
+                          </div>
+                          <span className="text-xs font-semibold text-zinc-400 shrink-0">Δ{attr.weight}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </Card>
           ) : (

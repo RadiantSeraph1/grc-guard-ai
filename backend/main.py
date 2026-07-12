@@ -23,7 +23,7 @@ import ai_gateway
 import security
 import rag
 import xai
-import ai_agents
+import lime_engine
 import s3_storage
 import framework_library
 from seed import seed_db
@@ -59,8 +59,12 @@ app.add_middleware(
 # Create database tables immediately on import
 models.Base.metadata.create_all(bind=database.engine)
 
-# SQLite Database for Backward-Compatible Audit Logs
-AUDIT_DB = "grc_audit_logs.db"
+# SQLite Database for Backward-Compatible Audit Logs. Default to a path beside
+# this file so it works cross-platform — a hardcoded POSIX "/tmp" path broke
+# import on Windows. Override with AUDIT_DB_PATH in deployment (e.g. /tmp on Linux).
+AUDIT_DB = os.environ.get("AUDIT_DB_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "grc_audit_logs.db"
+)
 
 def _audit_connect():
     """Open the audit-log SQLite DB with WAL + a busy timeout (C4)."""
@@ -823,19 +827,34 @@ def super_admin_reset_data(db: Session = Depends(database.get_db), current_user 
     return {"status": "success", "message": "All operational data was cleared. The organization is now empty."}
 
 @app.post("/api/ingest")
-async def ingest_document(file: UploadFile = File(...), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    """Upload a regulatory reference/evidence document and index it into the RAG database."""
+async def ingest_document(
+    file: UploadFile = File(...),
+    effective_date: Optional[str] = Form(None),
+    expiration_date: Optional[str] = Form(None),
+    regulatory_version: Optional[str] = Form(None),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"])),
+):
+    """Upload a regulatory reference/evidence document and index it into the RAG database.
+
+    effective_date/expiration_date drive rag.py's temporal filtering (already
+    live). regulatory_version tags which revision of a regulation this document
+    represents (e.g. "Basel III 2017", "Basel III 2019 revision") — Ch.3 Layer 1
+    "temporal harmonization with regulatory version tagging"."""
     content = await file.read()
     safe_filename = validate_upload(file.filename, content, {".pdf", ".txt", ".md", ".csv", ".json"})
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
     temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{safe_filename}")
-    
+
     try:
         with open(temp_path, "wb") as buffer:
             buffer.write(content)
-            
-        result = rag.ingest_document(temp_path, safe_filename, org_id=current_user.org_id, source_type="reference")
+
+        result = rag.ingest_document(
+            temp_path, safe_filename, org_id=current_user.org_id, source_type="reference",
+            effective_date=effective_date, expiration_date=expiration_date,
+            regulatory_version=regulatory_version,
+        )
         return {"message": result, "corpus": rag.corpus_stats(current_user.org_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to ingest document: {str(e)}")
@@ -936,7 +955,7 @@ def build_compliance_analysis(db: Session, org_id: str, question: Optional[str] 
         Top failing controls: {json.dumps(failing_controls[:5])}
         Top open risks: {[{"title": risk.title, "residual_score": risk.residual_score, "category": risk.category} for risk in open_risks[:5]]}
         RAG citations: {json.dumps(citations[:3])}
-        Return a concise executive analysis with remediation priorities.
+        Return a concise executive analysis.
         """
         ai_summary = ai_gateway.generate_content(prompt, "You are a senior banking GRC analysis agent. Be precise and evidence-grounded.", org_id=org_id)
 
@@ -988,10 +1007,81 @@ def run_compliance_analysis(request: AnalysisRequest, db: Session = Depends(data
         include_ai=request.include_ai
     )
 
+class BrainChatRequest(BaseModel):
+    query: str
+
+@app.post("/api/brain/chat")
+def run_brain_chat(request: BrainChatRequest, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    import ai_agents
+    try:
+        brain = ai_agents.create_brain_agent(current_user.org_id)
+        # We run the ReAct loop which leverages the tools and the sub-agents
+        response = brain.run(request.query)
+        # response.content will be an instance of ComplianceExplanation (XAI Schema)
+        if hasattr(response.content, 'model_dump'):
+            return response.content.model_dump()
+        return {"response": response.content}
+    except ValueError as e:
+        # e.g., missing AI provider
+        return {"error": str(e)}
+    except Exception as e:
+        print(f"Error in Brain Chat: {e}")
+        return {"error": "The GRC Brain encountered an error while processing your request."}
+
 class ScanRequest(BaseModel):
     text: str
     perspective: str = "Standard" # Attacker, User, Standard
     byok_key: Optional[str] = None
+
+class FeedbackRequest(BaseModel):
+    source: str  # "scan" | "brain"
+    input_text: str
+    output_decision: Optional[str] = None
+    output_explanation: Optional[str] = None
+    rating: str  # "up" | "down"
+
+@app.post("/api/feedback")
+def submit_feedback(request: FeedbackRequest, db: Session = Depends(database.get_db),
+                    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Record an auditor's thumbs-up/down on a Scanner or Brain output.
+
+    Data-collection step for Ch.3 "reinforcement learning based on human
+    feedback with domain experts" — stores full context so a later export
+    (backend/training/scripts/export_dpo_pairs.py) can build (prompt, chosen,
+    rejected) DPO preference pairs once matched up/down ratings exist for a
+    similar input. No training happens here."""
+    if request.source not in ("scan", "brain"):
+        raise HTTPException(status_code=400, detail="source must be 'scan' or 'brain'.")
+    if request.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'.")
+    entry = models.Feedback(
+        id=str(uuid.uuid4()),
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        source=request.source,
+        input_text=request.input_text,
+        output_decision=request.output_decision,
+        output_explanation=request.output_explanation,
+        rating=request.rating,
+        created_at=int(time.time()),
+    )
+    db.add(entry)
+    db.commit()
+    return {"status": "recorded", "id": entry.id}
+
+@app.post("/api/xai/lime-explain")
+def lime_explain(request: ScanRequest, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
+    """Opt-in REAL perturbation-based LIME against the active AI provider.
+
+    Not run automatically on every /api/scan — this issues up to 16 extra model
+    calls per explanation, so it's a deliberate auditor action ("Explain with
+    LIME"), not part of the normal scan path. See lime_engine.py."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    try:
+        return lime_engine.real_lime_attribution(request.text, org_id=current_user.org_id, perspective=request.perspective)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e) or "No usable AI provider configured for LIME explanation.")
 
 def evaluate_scan_case(text: str, perspective: str, org_id: str, db: Session) -> dict:
     matched_regs = rag.search_documents(text, org_id=org_id, limit=3)
@@ -1099,7 +1189,7 @@ def build_scan_reasoning_trace(
         {
             "stage": "Auditor synthesis",
             "status": "completed",
-            "detail": "Composed the visible justification, remediation guidance, and audit-ready output."
+            "detail": "Composed the visible justification and audit-ready output."
         }
     ]
 
@@ -1464,6 +1554,200 @@ def _evaluate_case_set(cases: list, org_id: str, db: Session) -> tuple:
     return results, metrics
 
 
+@app.post("/api/evaluation/llm-benchmark")
+def run_llm_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor", "Editor"]))):
+    """Run the paper Table 2.1 Basel III benchmark against the active LLM provider.
+    Scores 10 ground-truth Q&A cases and compares against paper baselines."""
+    from benchmark_cases import BASEL_BENCHMARK
+    org_id = current_user.org_id
+    results = []
+    correct = 0
+    for case in BASEL_BENCHMARK:
+        try:
+            prompt = (
+                f"You are a banking regulatory compliance expert. Answer the following question "
+                f"precisely and concisely in 1-2 sentences. Be specific with numbers and percentages.\n\n"
+                f"Question: {case['question']}"
+            )
+            response = ai_gateway.generate_content(
+                prompt,
+                system_message="You are a senior banking GRC compliance expert with deep knowledge of Basel III, CBEST, GDPR, and SOC 2.",
+                org_id=org_id
+            )
+            response_lower = response.lower()
+            hit = any(kw.lower() in response_lower for kw in case["ground_truth_keywords"])
+            if hit:
+                correct += 1
+            results.append({
+                "id": case["id"],
+                "category": case["category"],
+                "question": case["question"],
+                "correct": hit,
+                "expected": case["ground_truth"],
+                "got": response[:300],
+                "perspective": case["perspective"],
+                "error_category": case.get("error_category", "Standard Factual"),
+            })
+        except Exception as e:
+            results.append({
+                "id": case["id"],
+                "category": case["category"],
+                "question": case["question"],
+                "correct": False,
+                "expected": case["ground_truth"],
+                "got": f"Error: {str(e)}",
+                "perspective": case["perspective"],
+                "error_category": case.get("error_category", "Standard Factual"),
+            })
+    accuracy = round(correct / len(BASEL_BENCHMARK) * 100, 1) if BASEL_BENCHMARK else 0
+
+    # Per-Table-2.3 error taxonomy breakdown: accuracy grouped by error_category,
+    # so a blended 70% doesn't hide that Domain Understanding (perspective
+    # confusion) or Cross-Border Reconciliation may be much worse.
+    taxonomy: dict = {}
+    for r in results:
+        bucket = taxonomy.setdefault(r["error_category"], {"total": 0, "correct": 0})
+        bucket["total"] += 1
+        bucket["correct"] += 1 if r["correct"] else 0
+    error_taxonomy = {
+        cat: {
+            "total": stats["total"],
+            "correct": stats["correct"],
+            "accuracy": round(stats["correct"] / stats["total"] * 100, 1) if stats["total"] else 0,
+        }
+        for cat, stats in taxonomy.items()
+    }
+
+    return {
+        "accuracy": accuracy,
+        "error_taxonomy": error_taxonomy,
+        "correct": correct,
+        "total": len(BASEL_BENCHMARK),
+        "results": results,
+        "paper_baselines": {
+            "gpt4_zero_shot": 68,
+            "claude_35_zero_shot": 65,
+            "regulllama_finetuned": 91,
+            "human_expert": 85,
+            "source": "UMaT Paper Table 2.1"
+        },
+        "categories": list(set(r["category"] for r in results)),
+        "summary": f"Active LLM scored {accuracy}% on {len(BASEL_BENCHMARK)} Basel III/CBEST benchmark cases (paper GPT-4 zero-shot baseline: 68%)."
+    }
+
+
+@app.post("/api/evaluation/model-comparison")
+def run_model_comparison(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    """Base-model selection via quantitative benchmarking (Ch.3): runs the Basel
+    III/CBEST benchmark + Table 2.3 error taxonomy against EVERY configured
+    provider with usable credentials for this org (not just the active one),
+    and reports which one wins. Providers without a usable key are reported as
+    unusable, not silently skipped, so it's clear what wasn't compared."""
+    from benchmark_cases import BASEL_BENCHMARK
+    org_id = current_user.org_id
+    configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
+
+    provider_results = []
+    for config in configs:
+        api_key = ai_gateway.get_decrypted_key(config)
+        if not ai_gateway._provider_usable(config.id, api_key):
+            provider_results.append({"provider": config.id, "usable": False, "reason": "No usable credentials configured."})
+            continue
+
+        correct = 0
+        taxonomy: dict = {}
+        for case in BASEL_BENCHMARK:
+            try:
+                prompt = (
+                    f"You are a banking regulatory compliance expert. Answer the following question "
+                    f"precisely and concisely in 1-2 sentences. Be specific with numbers and percentages.\n\n"
+                    f"Question: {case['question']}"
+                )
+                response = ai_gateway.generate_content_for_config(
+                    prompt, config,
+                    system_instruction="You are a senior banking GRC compliance expert with deep knowledge of Basel III, CBEST, GDPR, and SOC 2.",
+                )
+                hit = any(kw.lower() in response.lower() for kw in case["ground_truth_keywords"])
+            except Exception:
+                hit = False
+            correct += 1 if hit else 0
+            cat = case.get("error_category", "Standard Factual")
+            bucket = taxonomy.setdefault(cat, {"total": 0, "correct": 0})
+            bucket["total"] += 1
+            bucket["correct"] += 1 if hit else 0
+
+        total = len(BASEL_BENCHMARK)
+        provider_results.append({
+            "provider": config.id,
+            "usable": True,
+            "model": config.model_override or ai_gateway.PROVIDER_DEFAULT_MODEL.get(config.id, "unknown"),
+            "accuracy": round(correct / total * 100, 1) if total else 0,
+            "correct": correct,
+            "total": total,
+            "error_taxonomy": {
+                cat: {**s, "accuracy": round(s["correct"] / s["total"] * 100, 1) if s["total"] else 0}
+                for cat, s in taxonomy.items()
+            },
+        })
+
+    usable = [p for p in provider_results if p["usable"]]
+    winner = max(usable, key=lambda p: p["accuracy"]) if usable else None
+    return {
+        "providers": provider_results,
+        "recommended_base_model": winner,
+        "method": (
+            "Per-provider run of the Basel III/CBEST benchmark + Table 2.3 error taxonomy against every "
+            "provider configured for this org with usable credentials. Per paper Ch.3 'base model selection "
+            "via quantitative benchmarking.'"
+        ),
+        "summary": (
+            f"Compared {len(usable)}/{len(provider_results)} configured providers with usable credentials. "
+            + (f"Best: {winner['provider']} ({winner['accuracy']}%)." if winner else "No usable provider to compare.")
+        ),
+    }
+
+
+@app.post("/api/evaluation/adversarial")
+def run_adversarial_eval(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor", "Editor"]))):
+    """Probe the scanner's semantic blind spots with adversarially-crafted inputs
+    (euphemism substitution, obfuscated routing, temporal justification,
+    transitional loophole) per paper Section 2.4.2. Reports the deterministic
+    rule-baseline detection rate — a case is "detected" when the scanner flags it
+    VIOLATION. The keyword baseline is expected to MISS most of these; the gap is
+    the semantic blind spot an LLM/fine-tuned model is meant to close (compare via
+    /api/scan with an active provider)."""
+    from benchmark_cases import ADVERSARIAL_CASES
+    org_id = current_user.org_id
+    results = []
+    detected = 0
+    for case in ADVERSARIAL_CASES:
+        rule_eval = evaluate_scan_case(case["input"], "Auditor", org_id, db)
+        is_detected = rule_eval["decision"] == "VIOLATION"
+        if is_detected:
+            detected += 1
+        results.append({
+            "id": case["id"],
+            "adversarial_technique": case["adversarial_technique"],
+            "description": case["description"],
+            "expected_flag": case["expected_flag"],
+            "rule_detected": is_detected,
+            "rule_category": rule_eval["category"],
+        })
+    total = len(ADVERSARIAL_CASES)
+    rate = round(detected / total * 100, 1) if total else 0
+    return {
+        "total": total,
+        "rule_baseline_detected": detected,
+        "rule_baseline_detection_rate": rate,
+        "results": results,
+        "method": ("Deterministic keyword rule baseline evaluated on adversarially-crafted inputs designed to "
+                   "evade keyword matching. Detection = flagged VIOLATION."),
+        "summary": (f"Rule baseline detected {detected}/{total} adversarial inputs ({rate}%). The misses are "
+                    "semantic blind spots (euphemism / obfuscated routing / temporal justification) that keyword "
+                    "matching cannot catch — the gap an LLM or fine-tuned model is meant to close (paper Sec. 2.4.2)."),
+    }
+
+
 @app.get("/api/evaluation/benchmark")
 def run_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
     """Honest benchmark: the deterministic rule baseline is scored on a HELD-OUT
@@ -1528,7 +1812,7 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
             "name": "Explainable output generation",
             "status": "Implemented as local attribution + auditor justification",
             "coverage": 72,
-            "evidence": "Scanner returns top terms, attribution weights, matched regulatory context, reasoning, and remediation."
+            "evidence": "Scanner returns top terms, attribution weights, matched regulatory context, and reasoning."
         },
         {
             "name": "Policy-conformant API and BYOK architecture",
@@ -2059,8 +2343,13 @@ def get_controls(department: Optional[str] = Query(None), db: Session = Depends(
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({c.owner_id for c in items if c.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for control in query.all():
+    for control in items:
         item = {
             "id": control.id,
             "org_id": control.org_id,
@@ -2071,7 +2360,7 @@ def get_controls(department: Optional[str] = Query(None), db: Session = Depends(
             "status": control.status,
             "owner_id": control.owner_id,
             "last_tested": control.last_tested,
-            "department": department_for_owner(db, current_user.org_id, control.owner_id)
+            "department": owner_dept.get(control.owner_id, "Unassigned")
         }
         result.append(item)
     return result
@@ -2097,8 +2386,13 @@ def get_risks(department: Optional[str] = Query(None), db: Session = Depends(dat
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({r.owner_id for r in items if r.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for risk in query.all():
+    for risk in items:
         result.append({
             "id": risk.id,
             "org_id": risk.org_id,
@@ -2110,7 +2404,7 @@ def get_risks(department: Optional[str] = Query(None), db: Session = Depends(dat
             "residual_score": risk.residual_score,
             "status": risk.status,
             "owner_id": risk.owner_id,
-            "department": department_for_owner(db, current_user.org_id, risk.owner_id)
+            "department": owner_dept.get(risk.owner_id, "Unassigned")
         })
     return result
 
@@ -2168,7 +2462,15 @@ def get_policies(db: Session = Depends(database.get_db), current_user: models.Us
     return result
 
 @app.post("/api/policies/upload")
-async def upload_policy(title: str = Form(...), file: UploadFile = File(...), db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+async def upload_policy(
+    title: str = Form(...),
+    file: UploadFile = File(...),
+    regulatory_version: Optional[str] = Form(None),
+    effective_date: Optional[str] = Form(None),
+    expiration_date: Optional[str] = Form(None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"])),
+):
     content = await file.read()
     safe_filename = validate_upload(file.filename, content, {".pdf", ".txt", ".md", ".csv", ".json"})
     stored_filename = f"policy_{uuid.uuid4()}_{safe_filename}"
@@ -2200,7 +2502,10 @@ async def upload_policy(title: str = Form(...), file: UploadFile = File(...), db
         f.write(content)
         
     try:
-        rag.ingest_document(temp_path, stored_filename, org_id=current_user.org_id, source_type="policy", replace_existing=True)
+        rag.ingest_document(
+            temp_path, stored_filename, org_id=current_user.org_id, source_type="policy", replace_existing=True,
+            effective_date=effective_date, expiration_date=expiration_date, regulatory_version=regulatory_version,
+        )
     except Exception as e:
         print(f"RAG policy chunking skipped: {str(e)}")
     finally:
@@ -2503,8 +2808,13 @@ def get_assets(department: Optional[str] = Query(None), db: Session = Depends(da
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({a.owner_id for a in items if a.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for asset in query.all():
+    for asset in items:
         result.append({
             "id": asset.id,
             "org_id": asset.org_id,
@@ -2514,7 +2824,7 @@ def get_assets(department: Optional[str] = Query(None), db: Session = Depends(da
             "compliance_status": asset.compliance_status,
             "is_in_scope": asset.is_in_scope,
             "integration_id": asset.integration_id,
-            "department": department_for_owner(db, current_user.org_id, asset.owner_id)
+            "department": owner_dept.get(asset.owner_id, "Unassigned")
         })
     return result
 
@@ -2562,90 +2872,7 @@ def create_audit_comment(request: CommentCreateRequest, db: Session = Depends(da
     db.commit()
     return {"status": "success"}
 
-# 11. Security Trust Center
-@app.get("/api/trust/documents")
-def get_trust_documents():
-    # Trust Center documents are published by the operator; none ship by default.
-    return []
-
-class NDASignRequest(BaseModel):
-    company_name: str
-    contact_email: str
-
-@app.post("/api/trust/sign-nda")
-def sign_nda(request: NDASignRequest):
-    return {"status": "success", "nda_signed": True, "token": str(uuid.uuid4())}
-
-class TrustChatRequest(BaseModel):
-    query: str
-
-@app.post("/api/trust/chat")
-def trust_center_chat(request: TrustChatRequest):
-    prompt = f"Respond to prospective client query: '{request.query}'. Verify compliance posture using Basel III, CBEST, and GDPR controls."
-    response = ai_gateway.generate_content(prompt, "You are a customer trust advisor assistant answering security audits.")
-    # Note: trust_center_chat has no current_user dependency yet; org_id plumbing is handled via agent-query
-    return {"response": response}
-
 # 12. AI Agent Console & Trust Graph Node-link calculations
-class AgentQueryRequest(BaseModel):
-    agent_id: str
-    prompt: str
-
-# Map the UI's agent ids to the agno agent ids defined in ai_agents.AGENT_DEFINITIONS.
-AGENT_ID_MAP = {
-    "compliance_agent": "compliance-agent",
-    "tprm_agent": "tprm-agent",
-    "trust_agent": "customer-trust-agent",
-    "risk_agent": "risk-propagation-agent",
-}
-
-@app.post("/api/ai/agent-query")
-def query_ai_agent(request: AgentQueryRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
-    agno_agent_id = AGENT_ID_MAP.get(request.agent_id)
-    if not agno_agent_id:
-        # Unknown agent id -> answer with a generic GRC officer persona (no tool steps).
-        response = ai_gateway.generate_content(
-            request.prompt, "You are a senior GRC compliance officer.", org_id=current_user.org_id
-        )
-        return {"response": response, "steps": []}
-
-    result = ai_agents.run_agent_detailed(agno_agent_id, request.prompt, current_user.org_id)
-    return {"response": result["content"], "steps": result.get("steps", [])}
-
-@app.get("/api/ai/trust-graph")
-def get_trust_graph(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
-    nodes = []
-    links = []
-    
-    integrations = db.query(models.Integration).filter_by(org_id=current_user.org_id).all()
-    for i in integrations:
-        nodes.append({"id": i.id, "label": i.name, "type": "integration", "status": i.status})
-        
-    assets = db.query(models.Asset).filter_by(org_id=current_user.org_id).all()
-    for a in assets:
-        nodes.append({"id": a.id, "label": a.name, "type": "asset", "status": a.compliance_status})
-        if a.integration_id:
-            links.append({"source": a.integration_id, "target": a.id, "type": "provides"})
-            
-    controls = db.query(models.Control).filter_by(org_id=current_user.org_id).all()
-    for c in controls:
-        nodes.append({"id": c.id, "label": c.title, "type": "control", "status": c.status})
-        if "CET1" in c.control_code:
-            links.append({"source": "aws", "target": c.id, "type": "audits"})
-        elif "GDPR" in c.control_code:
-            links.append({"source": "asset-01", "target": c.id, "type": "secures"})
-        elif "MFA" in c.control_code:
-            links.append({"source": "okta", "target": c.id, "type": "governs"})
-        elif "GIT" in c.control_code:
-            links.append({"source": "asset-02", "target": c.id, "type": "checks"})
-            
-    risks = db.query(models.Risk).filter_by(org_id=current_user.org_id).all()
-    for r in risks:
-        nodes.append({"id": r.id, "label": r.title, "type": "risk", "status": r.status})
-        for mit in r.mitigations:
-            links.append({"source": mit.id, "target": r.id, "type": "mitigates"})
-            
-    return {"nodes": nodes, "links": links}
 
 # 13. Framework List & Dynamic Progress
 @app.get("/api/frameworks")
@@ -2756,137 +2983,6 @@ def sync_all_integrations(background_tasks: BackgroundTasks, current_user: model
     return {"status": "started", "message": "Re-syncing all connected integrations."}
 
 
-# --- Remediation tasks ---
-
-class RemediationTaskCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    control_code: Optional[str] = None
-    owner_id: Optional[str] = None
-    priority: Optional[str] = "Medium"
-    due_date: Optional[int] = None
-
-
-class RemediationTaskUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    owner_id: Optional[str] = None
-    priority: Optional[str] = None
-    status: Optional[str] = None
-    due_date: Optional[int] = None
-
-
-def _serialize_task(t: models.RemediationTask, owner_name: Optional[str] = None) -> dict:
-    return {
-        "id": t.id,
-        "title": t.title,
-        "description": t.description,
-        "control_code": t.control_code,
-        "owner_id": t.owner_id,
-        "owner_name": owner_name,
-        "priority": t.priority,
-        "status": t.status,
-        "due_date": t.due_date,
-        "created_at": t.created_at,
-        "updated_at": t.updated_at,
-    }
-
-
-@app.get("/api/tasks")
-def list_remediation_tasks(
-    status: Optional[str] = Query(None),
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
-):
-    q = db.query(models.RemediationTask).filter_by(org_id=current_user.org_id)
-    if status:
-        q = q.filter(models.RemediationTask.status == status)
-    tasks = q.order_by(models.RemediationTask.created_at.desc()).all()
-    owner_ids = {t.owner_id for t in tasks if t.owner_id}
-    owners = {
-        u.id: u.name
-        for u in db.query(models.User).filter(models.User.id.in_(owner_ids or [""])).all()
-    }
-    return [_serialize_task(t, owners.get(t.owner_id)) for t in tasks]
-
-
-@app.post("/api/tasks")
-def create_remediation_task(req: RemediationTaskCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    now = int(time.time())
-    control = None
-    if req.control_code:
-        control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=req.control_code).first()
-    task = models.RemediationTask(
-        id=f"task_{uuid.uuid4().hex[:12]}",
-        org_id=current_user.org_id,
-        title=req.title,
-        description=req.description,
-        control_id=control.id if control else None,
-        control_code=req.control_code,
-        owner_id=req.owner_id,
-        priority=req.priority or "Medium",
-        status="Open",
-        due_date=req.due_date,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.post("/api/tasks/from-control/{control_code}")
-def create_task_from_control(control_code: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    """Create a remediation task pre-filled from a failing/at-risk control."""
-    control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=control_code).first()
-    if not control:
-        raise HTTPException(status_code=404, detail="Control not found.")
-    now = int(time.time())
-    priority = "High" if control.status == "Failing" else "Medium"
-    task = models.RemediationTask(
-        id=f"task_{uuid.uuid4().hex[:12]}",
-        org_id=current_user.org_id,
-        title=f"Remediate: {control.title}",
-        description=f"Control {control.control_code} is {control.status}. {control.description or ''}".strip(),
-        control_id=control.id,
-        control_code=control.control_code,
-        owner_id=control.owner_id,
-        priority=priority,
-        status="Open",
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.patch("/api/tasks/{task_id}")
-def update_remediation_task(task_id: str, req: RemediationTaskUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    for field in ("title", "description", "owner_id", "priority", "status", "due_date"):
-        val = getattr(req, field)
-        if val is not None:
-            setattr(task, field, val)
-    task.updated_at = int(time.time())
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.delete("/api/tasks/{task_id}")
-def delete_remediation_task(task_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    db.delete(task)
-    db.commit()
-    return {"status": "deleted", "id": task_id}
-
 
 # --- Notifications ---
 
@@ -2896,13 +2992,6 @@ def list_notifications(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
 ):
-    """List notifications. Generates overdue-task alerts on read (idempotent)."""
-    import notifications as notif
-    try:
-        notif.generate_overdue_task_notifications(db, current_user.org_id)
-    except Exception as e:
-        print(f"Overdue notification generation skipped: {e}")
-
     q = db.query(models.Notification).filter_by(org_id=current_user.org_id)
     if unread_only:
         q = q.filter(models.Notification.read == False)  # noqa: E712
@@ -2992,3 +3081,25 @@ def export_report(
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
     raise HTTPException(status_code=400, detail="format must be 'csv' or 'pdf'.")
+
+@app.get("/api/security/attestation-status")
+def get_attestation_status(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    """Returns current LLM provider attestation report for regulatory audit.
+    Per EU AI Act Art. 9 (Risk Management) + Art. 13 (Transparency).
+    Simulates TPM2_QUOTE attestation of the active provider."""
+    import attestation as att_module
+    org_id = current_user.org_id
+    active_config = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
+    if not active_config:
+        return {
+            "attested": False,
+            "provider": "none",
+            "error": "No active AI provider configured for this organization.",
+            "policy_violations": ["No AI provider configured"]
+        }
+    report = att_module.attest_provider(
+        provider_type=active_config.provider_type,
+        model_name=active_config.model_name or "",
+        base_url=active_config.base_url or ""
+    )
+    return report

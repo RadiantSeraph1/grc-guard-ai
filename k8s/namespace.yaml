@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/managed-by: kubectl

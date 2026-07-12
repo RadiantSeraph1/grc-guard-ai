@@ -18,7 +18,8 @@ sentence-transformers>=3.0
 transformers>=4.40
 torch>=2.2
 
-# --- Task 3 (optional generator fine-tune) ---
-# peft>=0.11
-# trl>=0.9
-# accelerate>=0.30
+# --- Task 3 / Phase 1 (LoRA/QLoRA domain fine-tune, train_lora.py) ---
+peft>=0.11
+trl>=0.9
+accelerate>=0.30
+bitsandbytes>=0.43   # 4-bit quantization for QLoRA; Linux/CUDA only (Colab/GCP V100, not local Windows dev)

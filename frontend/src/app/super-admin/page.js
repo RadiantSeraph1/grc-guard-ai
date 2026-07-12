@@ -20,7 +20,7 @@ import {
   XCircle
 } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "@/app/lib/api";
 const ROLES = ["SuperAdmin", "Admin", "Editor", "Auditor", "Viewer", "Employee"];
 const STATUSES = ["Active", "Onboarding", "Offboarding", "Suspended"];
 const INTEGRATION_STATUSES = ["Connected", "Configured", "Disconnected", "Error"];

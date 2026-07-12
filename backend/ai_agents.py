@@ -1,356 +1,177 @@
-"""GRC agents built on the agno framework.
-
-These are real agno `Agent` objects. Each agent is given:
-  * the active organization's model (Groq for now / the in-house model, via ai_gateway)
-  * GRC-specific instructions
-  * tools to read the live platform state (RAG corpus + control/risk graph)
-
-The same factory (`build_grc_agents`) is used both by the in-app
-`/api/ai/agent-query` endpoint and by the standalone AgentOS server (agent_os.py)
-that powers the agno UI.
-"""
-
-from typing import List, Optional
+import logging
+from sqlalchemy.orm import Session
 from agno.agent import Agent
 
-import database
-import models
-import ai_gateway
+from database import SessionLocal
+from models import Control, Framework, Risk
 import rag
+from ai_gateway import get_brain_model
+from pydantic import BaseModel, Field
+from typing import List
 
-DEFAULT_COMPANY_ID = "bank_enterprise"
-
-# Shared output-formatting contract appended to every agent. Keeps responses
-# clean and structured (Markdown is rendered by the UI), with no decorative
-# emojis or ASCII separators.
-FORMATTING_GUIDE = (
-    "\n\nOutput format rules:\n"
-    "- Write in clean, well-structured Markdown that renders nicely (the UI renders Markdown).\n"
-    "- Use short section headings, bullet lists, and bold labels to organise the answer.\n"
-    "- When comparing items or listing controls/gaps, use a proper Markdown table with a header row.\n"
-    "- Do NOT use emojis. Do NOT use decorative ASCII separators or horizontal rules.\n"
-    "- Keep prose tight; prefer lists and tables over long paragraphs. Be specific and grounded."
-)
-
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tools (plain functions -> agno auto-wraps them as tools)
+# Agent Tools
 # ---------------------------------------------------------------------------
 
-def _search_compliance_corpus(query: str, org_id: str) -> str:
-    matches = rag.search_documents(query, org_id=org_id, limit=4)
-    if not matches:
-        return "No documents have been ingested into the corpus yet for this organization."
-    return "\n\n".join(
-        f"Source: {m['filename']} (Page {m['page_number']}):\n{m['content']}" for m in matches
-    )
-
-
-def _get_grc_graph_state(org_id: str) -> str:
-    db = database.SessionLocal()
+def search_knowledge_base(query: str, org_id: str) -> str:
+    """Search the organization's compliance documents (RAG)."""
     try:
-        lines: List[str] = []
-        for i in db.query(models.Integration).filter_by(org_id=org_id).all():
-            lines.append(f"Integration '{i.name}' (ID: {i.id}) is {i.status}.")
-        for a in db.query(models.Asset).filter_by(org_id=org_id).all():
-            scope = "In Scope" if a.is_in_scope else "Out of Scope"
-            lines.append(f"Asset '{a.name}' ({a.type}) is {a.compliance_status} ({scope}).")
-        for c in db.query(models.Control).filter_by(org_id=org_id).all():
-            lines.append(f"Control '{c.title}' [{c.control_code}] is {c.status}.")
-        for r in db.query(models.Risk).filter_by(org_id=org_id).all():
-            lines.append(f"Risk '{r.title}' ({r.category}) is {r.status} "
-                         f"(inherent {r.inherent_score}, residual {r.residual_score}).")
-        if not lines:
-            return "The GRC graph is currently empty. Connect integrations and add controls to populate it."
-        return "\n".join(lines)
+        results = rag.search_documents(query, org_id=org_id, limit=5)
+        if not results:
+            return "No relevant documentation found."
+        text = "\n\n".join([f"Source: {r['filename']} (Page {r['page_number']})\n{r['content']}" for r in results])
+        return text
+    except Exception as e:
+        logger.error(f"Error in search_knowledge_base: {e}")
+        return f"Error searching knowledge base: {e}"
+
+
+def get_framework_controls(framework_name: str, org_id: str) -> str:
+    """Retrieve compliance controls for a specific framework (e.g. SOC2, ISO27001)."""
+    db = SessionLocal()
+    try:
+        framework = db.query(Framework).filter(
+            Framework.name.ilike(f"%{framework_name}%"),
+            Framework.org_id == org_id
+        ).first()
+        if not framework:
+            return f"Framework matching '{framework_name}' not found."
+        
+        controls = db.query(Control).filter(
+            Control.framework_id == framework.id,
+            Control.org_id == org_id
+        ).all()
+        
+        if not controls:
+            return f"No controls mapped to framework {framework.name}."
+            
+        res = [f"Framework: {framework.name}"]
+        for c in controls:
+            res.append(f"- [{c.status}] {c.control_id}: {c.description}")
+        return "\n".join(res)
     finally:
         db.close()
 
 
-def make_corpus_tool(org_id: str):
-    """Build an org-bound RAG search tool.
-
-    The org is captured in the closure so the LLM never has to (and cannot)
-    supply it — this enforces tenant isolation: each agent only ever searches
-    its own organization's corpus.
-    """
-    def search_compliance_corpus(query: str) -> str:
-        """Search this organization's ingested regulatory / evidence corpus (RAG).
-
-        Args:
-            query: The natural-language search query.
-        Returns:
-            Matching source chunks with filename and page number, or a notice if empty.
-        """
-        return _search_compliance_corpus(query, org_id)
-    return search_compliance_corpus
-
-
-def make_graph_tool(org_id: str):
-    """Build an org-bound GRC graph reader (tenant-isolated via closure)."""
-    def get_grc_graph_state() -> str:
-        """Return the current control / risk / asset / integration posture for this organization.
-
-        Returns:
-            A textual snapshot of nodes and their statuses (empty notice if none).
-        """
-        return _get_grc_graph_state(org_id)
-    return get_grc_graph_state
-
-
-# Backwards-compatible module-level tools (default org). Prefer the org-bound
-# `make_*_tool` factories above inside agents so tenant scoping is guaranteed.
-def search_compliance_corpus(query: str, org_id: str = DEFAULT_COMPANY_ID) -> str:
-    """Search an organization's ingested regulatory / evidence corpus (RAG)."""
-    return _search_compliance_corpus(query, org_id)
-
-
-def get_grc_graph_state(org_id: str = DEFAULT_COMPANY_ID) -> str:
-    """Return the current GRC posture for an organization."""
-    return _get_grc_graph_state(org_id)
+def get_active_risks(org_id: str) -> str:
+    """Retrieve all Open risks for the organization."""
+    db = SessionLocal()
+    try:
+        risks = db.query(Risk).filter(Risk.org_id == org_id, Risk.status == "Open").all()
+        if not risks:
+            return "No open risks found."
+        res = []
+        for r in risks:
+            res.append(f"- {r.name} (Severity: {r.severity}, Score: {r.risk_score})\n  Desc: {r.description}")
+        return "\n".join(res)
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
-# Agent factory
+# Brain Initialization & XAI Schema
 # ---------------------------------------------------------------------------
 
-AGENT_DEFINITIONS = [
-    {
-        "id": "compliance-agent",
-        "name": "Compliance Agent",
-        "instructions": (
-            "You are the Compliance Agent. You audit policy drafts and map them to framework "
-            "controls (Basel III, GDPR, SOC 2, ISO 27001, PCI-DSS). Always ground answers in the "
-            "ingested corpus using the search tool. Identify alignment, gaps, and concrete fixes."
-        ),
-        "tools": ["corpus", "graph"],
-    },
-    {
-        "id": "tprm-agent",
-        "name": "TPRM Vendor Risk Agent",
-        "instructions": (
-            "You are the Third-Party Risk Management Agent. You evaluate vendor security "
-            "questionnaires, outline inherent risks (data hosting, access, business continuity), "
-            "and recommend an approval status (Approved / Under Assessment / Flagged) and a risk tier."
-        ),
-        "tools": ["corpus"],
-    },
-    {
-        "id": "customer-trust-agent",
-        "name": "Customer Trust Agent",
-        "instructions": (
-            "You are the Customer Trust Agent. You answer customer and prospect security questions "
-            "professionally and reassuringly, grounded in the organization's actual controls. Use the "
-            "search tool and the GRC graph to cite real posture; never invent controls that do not exist."
-        ),
-        "tools": ["corpus", "graph"],
-    },
-    {
-        "id": "risk-propagation-agent",
-        "name": "Risk Propagation Agent",
-        "instructions": (
-            "You are the Risk Propagation Agent. You trace how failing controls cascade risk across "
-            "assets and integrations in the Trust Graph, and recommend specific control tests or "
-            "mitigations to lower residual risk. Always read the live graph state first."
-        ),
-        "tools": ["graph", "corpus"],
-    },
-]
+class FeatureAttribution(BaseModel):
+    feature: str = Field(description="The specific regulatory clause, rule, or risk factor identified.")
+    importance: str = Field(description="High, Medium, or Low impact on the final decision.")
+    explanation: str = Field(description="Why this feature influenced the decision (simulating SHAP/LIME logic).")
 
-
-def _default_model():
-    """Interim fallback model for agent serving (Groq until the in-house model is
-    trained). Returns None when no usable provider is configured; callers then
-    degrade to the grounded gateway fallback rather than erroring.
-    """
-    key = ai_gateway.get_env_provider_key("groq")
-    if not key:
-        return None
-    from agno.models.openai.like import OpenAILike
-    return OpenAILike(
-        id=ai_gateway.PROVIDER_DEFAULT_MODEL["groq"],
-        api_key=key,
-        base_url=ai_gateway.OPENAI_COMPATIBLE_BASE_URL["groq"],
+class ComplianceExplanation(BaseModel):
+    decision: str = Field(description="The final compliance decision or summary (e.g. COMPLIANT, NON_COMPLIANT, or a direct answer).")
+    confidence_score: int = Field(description="Confidence score from 0 to 100.")
+    feature_attributions: List[FeatureAttribution] = Field(description="The key factors that drove this decision.")
+    jurisdictional_conflicts: List[str] = Field(
+        default=[],
+        description="List of detected cross-jurisdictional regulatory conflicts, e.g. 'EU CRD/CRR conflicts with US Basel III Final Rule on counterparty credit risk calculation'."
+    )
+    counterfactual: str = Field(
+        default="",
+        description="Minimal change scenario that would flip this compliance decision (per EU AI Act Art. 86 right-to-explanation)."
     )
 
+def create_brain_agent(org_id: str) -> Agent:
+    """Instantiate the GRC Brain multi-agent orchestration layer for the given organization."""
+    model = get_brain_model(org_id)
+    if not model:
+        raise ValueError("No AI provider available. Configure one in Settings → AI Gateway.")
 
-def _model_for_org(org_id: Optional[str]):
-    """Build the agno model for the org's active provider.
+    # Closures bind the org_id to the tools so the LLM doesn't need to guess it.
+    def tool_search_kb(query: str) -> str:
+        """Search the internal knowledge base for policies, evidence, and documents."""
+        return search_knowledge_base(query, org_id)
+        
+    def tool_get_controls(framework_name: str) -> str:
+        """Retrieve compliance controls for a specific framework (e.g. SOC2)."""
+        return get_framework_controls(framework_name, org_id)
+        
+    def tool_get_risks() -> str:
+        """Retrieve all active risks for the organization."""
+        return get_active_risks(org_id)
 
-    Falls back to the interim default model (Groq) when the active provider is the
-    local engine or cannot be constructed. May return None if nothing is usable —
-    callers handle that by degrading to the grounded gateway fallback.
-    """
-    try:
-        db = database.SessionLocal()
-        try:
-            config = ai_gateway.get_active_provider_config(db, org_id=org_id)
-            api_key = ai_gateway.get_decrypted_key(config)
-            model = ai_gateway._build_model(config.id, api_key, config)
-            if model is not None:
-                return model
-        finally:
-            db.close()
-    except Exception as e:
-        print(f"Falling back to interim default model for agents: {e}")
-    return _default_model()
-
-
-def build_grc_agents(org_id: str = DEFAULT_COMPANY_ID) -> List[Agent]:
-    """Construct the full set of GRC agno agents for an organization.
-
-    Tools are bound to `org_id` via closures so every agent reads only its own
-    tenant's corpus and graph — the LLM cannot cross organizations.
-    """
-    model = _model_for_org(org_id)
-    tool_registry = {
-        "corpus": make_corpus_tool(org_id),
-        "graph": make_graph_tool(org_id),
-    }
-    agents: List[Agent] = []
-    for d in AGENT_DEFINITIONS:
-        agents.append(Agent(
-            id=d["id"],
-            name=d["name"],
-            model=model,
-            instructions=d["instructions"] + FORMATTING_GUIDE,
-            tools=[tool_registry[key] for key in d["tools"]],
-            markdown=True,
-            telemetry=False,
-        ))
-    return agents
-
-
-def build_agent(agent_id: str, org_id: str = DEFAULT_COMPANY_ID) -> Optional[Agent]:
-    for agent in build_grc_agents(org_id):
-        if agent.id == agent_id:
-            return agent
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compatible wrappers used by /api/ai/agent-query in main.py
-# ---------------------------------------------------------------------------
-
-def _run(agent_id: str, prompt: str, org_id: str) -> str:
-    try:
-        agent = build_agent(agent_id, org_id)
-        if agent is None:
-            return _grounded_fallback(prompt, org_id)
-        content = (agent.run(prompt).content or "").strip()
-        if _is_failure_content(content):
-            return _grounded_fallback(prompt, org_id)
-        return content
-    except Exception as e:
-        print(f"Agent {agent_id} run failed: {e}. Falling back to gateway.")
-        return _grounded_fallback(prompt, org_id)
-
-
-def _extract_steps(result) -> list:
-    """Turn an agno RunOutput (an object, not a dict) into UI 'thinking' steps."""
-    steps = []
-    reasoning = getattr(result, "reasoning_content", None)
-    if reasoning:
-        steps.append({"type": "reasoning", "title": "Reasoning", "detail": str(reasoning)[:4000]})
-    for step in (getattr(result, "reasoning_steps", None) or []):
-        detail = getattr(step, "reasoning", None) or getattr(step, "action", None) or getattr(step, "result", "")
-        steps.append({"type": "reasoning", "title": str(getattr(step, "title", "Reasoning step")),
-                      "detail": str(detail)[:2000]})
-    for tool in (getattr(result, "tools", None) or []):
-        output = getattr(tool, "result", None) or getattr(tool, "content", "")
-        steps.append({"type": "tool",
-                      "title": f"Called {getattr(tool, 'tool_name', 'tool')}",
-                      "args": getattr(tool, "tool_args", {}),
-                      "detail": str(output)[:2000] if output else ""})
-    return steps
-
-
-# Markers that indicate the model emitted a provider/tool-calling error as its
-# "answer" rather than actually answering. Common with smaller models (e.g.
-# Groq llama) that struggle with structured function calling.
-_TOOL_FAILURE_MARKERS = (
-    "failed to call a function",
-    "failed_generation",
-    "tool call validation failed",
-    "function call",
-)
-
-
-def _is_failure_content(content: str) -> bool:
-    if not content or not content.strip():
-        return True
-    low = content.lower()
-    return any(m in low for m in _TOOL_FAILURE_MARKERS)
-
-
-def _grounded_fallback(prompt: str, org_id: str) -> str:
-    """Plain (no-tool) answer, but still grounded by injecting the corpus + graph
-    context into the prompt so a tool-incapable model keeps GRC grounding."""
-    try:
-        corpus = search_compliance_corpus(prompt, org_id=org_id)
-    except Exception:
-        corpus = ""
-    try:
-        graph = get_grc_graph_state(org_id=org_id)
-    except Exception:
-        graph = ""
-    grounded_prompt = (
-        f"{prompt}\n\n---\nReference material (use if relevant):\n"
-        f"[Corpus]\n{corpus}\n\n[GRC graph]\n{graph}"
+    # Specialists
+    auditor = Agent(
+        name="Compliance Auditor",
+        model=model,
+        description="Expert compliance auditor focusing on frameworks and controls.",
+        instructions="Look up frameworks and map them to controls. Evaluate compliance posture.",
+        tools=[tool_get_controls],
+        markdown=False,
     )
-    return ai_gateway.generate_content(
-        grounded_prompt,
-        "You are a senior banking GRC analysis agent." + FORMATTING_GUIDE,
-        org_id=org_id,
+    
+    risk_assessor = Agent(
+        name="Risk Assessor",
+        model=model,
+        description="Expert risk analyst focusing on organizational risk.",
+        instructions="Review active risks and identify exposures or missing mitigations.",
+        tools=[tool_get_risks],
+        markdown=False,
+    )
+    
+    researcher = Agent(
+        name="Policy Researcher",
+        model=model,
+        description="Data researcher specialized in querying internal policy documents.",
+        instructions="Search the internal knowledge base to answer questions about internal policies.",
+        tools=[tool_search_kb],
+        markdown=False,
     )
 
+    jurisdiction_reconciler = Agent(
+        name="Jurisdiction Reconciler",
+        model=model,
+        description="Expert in cross-border regulatory conflicts between Basel III/IV, EU CRD/CRR, US Federal Reserve rules, GDPR, and local frameworks.",
+        instructions=(
+            "When given regulatory provisions from different jurisdictions, identify whether they conflict, "
+            "overlap, or are compatible. Always state WHICH jurisdiction's rule takes precedence and WHY "
+            "(e.g., lex specialis, more stringent rule, local law override). "
+            "Format conflicts as: CONFLICT: [EU CRD/CRR vs US Basel III] — [description]. "
+            "If compatible: COMPATIBLE: [explanation]. "
+            "Always check Basel III vs Basel IV temporal differences."
+        ),
+        tools=[tool_get_controls, tool_search_kb],
+        markdown=False,
+    )
 
-def run_agent_detailed(agent_id: str, prompt: str, org_id: str) -> dict:
-    """Run an agent and return both its answer and the steps it took.
-
-    Every failure path (agent construction, model build, the run itself, or a
-    model that emits a tool-calling error as its answer) degrades to a grounded
-    no-tool gateway call, so the endpoint always returns a usable answer.
-    """
-    try:
-        agent = build_agent(agent_id, org_id)
-        if agent is None:
-            return {"content": _grounded_fallback(prompt, org_id), "steps": []}
-        result = agent.run(prompt)
-        content = (result.content or "").strip()
-        if _is_failure_content(content):
-            print(f"Agent {agent_id} returned a tool-failure answer; using grounded fallback.")
-            return {"content": _grounded_fallback(prompt, org_id),
-                    "steps": _extract_steps(result)}
-        return {"content": content, "steps": _extract_steps(result)}
-    except Exception as e:
-        print(f"Agent {agent_id} detailed run failed: {e}. Falling back to gateway.")
-        return {"content": _grounded_fallback(prompt, org_id), "steps": []}
-
-
-class ComplianceAgent:
-    def run_audit(self, policy_text: str, db=None, org_id: str = DEFAULT_COMPANY_ID) -> str:
-        return _run("compliance-agent",
-                    f"Audit the following draft policy for GRC compliance and list gaps and fixes:\n\n{policy_text}",
-                    org_id)
-
-
-class TPRMAgent:
-    def evaluate_vendor(self, vendor_name: str, questionnaire_json: str, db=None, org_id: str = None) -> str:
-        return _run("tprm-agent",
-                    f"Perform a TPRM audit on vendor '{vendor_name}'. Questionnaire answers:\n{questionnaire_json}",
-                    org_id or DEFAULT_COMPANY_ID)
-
-
-class CustomerTrustAgent:
-    def answer_query(self, user_query: str, db=None, org_id: str = DEFAULT_COMPANY_ID) -> str:
-        return _run("customer-trust-agent",
-                    f"A customer asked this security question: \"{user_query}\". Answer it grounded in our real controls.",
-                    org_id)
-
-
-class AgentForRisk:
-    def calculate_risk(self, target_node_id: str, db=None, org_id: str = DEFAULT_COMPANY_ID) -> str:
-        return _run("risk-propagation-agent",
-                    f"Analyze risk propagation for target node '{target_node_id}' using the live GRC graph.",
-                    org_id)
+    # The GRC Brain (Orchestrator)
+    brain = Agent(
+        name="GRC Brain",
+        model=model,
+        description="Master orchestration agent for GRC Auditor.",
+        instructions=(
+            "You are the central AI Brain for GRC Auditor. You answer user queries about their compliance posture, "
+            "risks, and policies. If you don't know the answer, delegate to your team of specialists (Compliance Auditor, "
+            "Risk Assessor, Policy Researcher) to gather data before providing a final response. "
+            "If the query involves multiple regulatory frameworks or jurisdictions, delegate to the Jurisdiction Reconciler "
+            "to identify conflicts. Include any CONFLICT: findings in the jurisdictional_conflicts field. "
+            "You MUST synthesize your findings into the strict JSON format defined by your response model to provide "
+            "Auditor-ready Explainable AI (XAI) feature attributions. Do NOT output raw markdown."
+        ),
+        team=[auditor, risk_assessor, researcher, jurisdiction_reconciler],
+        response_model=ComplianceExplanation,
+        markdown=False
+    )
+    
+    return brain

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -9,7 +9,7 @@ import {
   LayoutDashboard, ShieldCheck, FileText, AlertTriangle,
   Users, FolderKanban, ShieldAlert, Library, Database,
   Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight,
-  Activity, Radio, Link2, LogOut, Layers, ClipboardList, Bell, FileBarChart
+  Activity, Radio, Link2, LogOut, Layers, ClipboardList, Bell, FileBarChart, Sparkles, Brain
 } from "lucide-react";
 import { API_BASE_URL } from "../lib/api";
 
@@ -51,11 +51,11 @@ export default function Sidebar() {
       } catch { /* ignore */ }
     };
     fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
+    const interval = setInterval(fetchUnread, 120000);
     return () => { active = false; clearInterval(interval); };
   }, [getToken, pathname]);
 
-  const navItems = [
+  const navItems = useMemo(() => [
     { category: "OVERVIEW", items: [
       { name: "Dashboard", href: "/", icon: LayoutDashboard },
       { name: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount }
@@ -63,11 +63,11 @@ export default function Sidebar() {
     { category: "GOVERNANCE", items: [
       { name: "Controls Monitor", href: "/controls", icon: ShieldCheck },
       { name: "Frameworks Library", href: "/frameworks", icon: Layers },
-      { name: "Remediation Tasks", href: "/tasks", icon: ClipboardList },
       { name: "Policies Manager", href: "/policies", icon: FileText }
     ]},
     { category: "RISK & VENDORS", items: [
-      { name: "Risk Register", href: "/risks", icon: AlertTriangle },
+      { name: "Risk Assessment", href: "/risks", icon: AlertTriangle },
+      { name: "GRC AI Brain", href: "/brain", icon: Brain },
       { name: "Vendor Risk (TPRM)", href: "/vendors", icon: FolderKanban }
     ]},
     { category: "COMPLIANCE & EVIDENCE", items: [
@@ -79,13 +79,11 @@ export default function Sidebar() {
       { name: "Asset Inventory", href: "/assets", icon: Database },
       { name: "People Directory", href: "/people", icon: Users }
     ]},
-    { category: "AUDIT & TRUST", items: [
+    { category: "AUDIT", items: [
       { name: "Auditor Portal", href: "/audit", icon: Scale },
-      { name: "Compliance Reports", href: "/reports", icon: FileBarChart },
-      { name: "Trust Center", href: "/trust", icon: FileCode }
+      { name: "Compliance Reports", href: "/reports", icon: FileBarChart }
     ]},
     { category: "ANALYSIS", items: [
-      { name: "AI Agents Center", href: "/ai", icon: Cpu },
       { name: "Benchmark Evaluation", href: "/evaluation", icon: Activity }
     ]},
     { category: "PROJECT CLOSURE", items: [
@@ -95,7 +93,7 @@ export default function Sidebar() {
       { name: "Settings", href: "/settings", icon: Settings },
       { name: "My Profile & Team", href: "/profile", icon: Users }
     ]}
-  ];
+  ], [unreadCount]);
 
   const isExpanded = !isCollapsed || isHovered;
 
@@ -103,7 +101,6 @@ export default function Sidebar() {
     { name: "Home", href: "/", icon: LayoutDashboard },
     { name: "Controls", href: "/controls", icon: ShieldCheck },
     { name: "Risks", href: "/risks", icon: AlertTriangle },
-    { name: "AI", href: "/ai", icon: Cpu },
     { name: "Settings", href: "/settings", icon: Settings }
   ];
 

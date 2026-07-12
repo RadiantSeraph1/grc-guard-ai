@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grc-frontend
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grc-guard
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grc-guard
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: us-central1-docker.pkg.dev/claude-code-501412/grc-guard/frontend:latest
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          env:
+            - name: BACKEND_API_BASE_URL
+              value: "http://grc-backend.grc-guard.svc.cluster.local:8001"
+            - name: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grc-guard-secrets
+                  key: CLERK_PUBLISHABLE_KEY
+            - name: CLERK_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grc-guard-secrets
+                  key: CLERK_SECRET_KEY
+            - name: NEXT_PUBLIC_CLERK_SIGN_IN_URL
+              value: "/sign-in"
+            - name: NEXT_PUBLIC_CLERK_SIGN_UP_URL
+              value: "/sign-up"
+            - name: NEXT_PUBLIC_API_BASE_URL
+              value: ""
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

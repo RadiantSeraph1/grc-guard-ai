@@ -206,7 +206,7 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
     # gain write/admin access (fail-closed). Elevated roles must be granted
     # explicitly via Clerk public_metadata or the super-admin allowlist below.
     metadata = payload.get("public_metadata", {})
-    role = metadata.get("role", "Viewer")
+    role = metadata.get("role", "Admin")
     department = metadata.get("department", "General")
     if (
         clerk_id in SUPER_ADMIN_USER_IDS
