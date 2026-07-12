@@ -1,13 +1,16 @@
 import os
 import time
+import logging
 import jwt
 import httpx
 from dotenv import load_dotenv
 from fastapi import Header, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Organization, Department
+from models import User, Organization, Department, Integration
 import seed
+
+logger = logging.getLogger(__name__)
 
 # Load .env BEFORE reading any environment variables below. auth.py may be
 # imported before any other module calls load_dotenv(), so without this the
@@ -215,20 +218,24 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
         role = "SuperAdmin"
         department = "Platform Governance"
     
-    # 1. Ensure Organization is provisioned and seeded
+    # 1. Ensure Organization is provisioned and seeded. Seeding is retried on
+    # every resolve when the connector catalog is empty (not just on org
+    # creation): seed_org_data's ensure_* helpers are additive/idempotent, so
+    # re-running them is safe, and a one-time seeding failure previously left
+    # an org permanently half-provisioned with no retry path (2026-07-12 incident).
     org = db.query(Organization).filter_by(id=org_id).first()
     if not org:
-        # Create organization record
         org = Organization(id=org_id, name=org_name, created_at=int(time.time()))
         db.add(org)
         db.commit()
         db.refresh(org)
-        
-        # Seed default GRC data for the company operating model
+
+    has_integrations = db.query(Integration).filter_by(org_id=org_id).first() is not None
+    if not has_integrations:
         try:
             seed.seed_org_data(db, org_id, org_name)
-        except Exception as e:
-            print(f"Error seeding company data {org_id}: {str(e)}")
+        except Exception:
+            logger.exception("Failed to seed org data for %s; will retry on next request.", org_id)
             
     # 2. Ensure User is provisioned under the single company key.
     user = db.query(User).filter_by(id=clerk_id, org_id=org_id).first()
