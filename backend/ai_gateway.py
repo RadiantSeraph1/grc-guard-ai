@@ -303,6 +303,7 @@ def _run_agent(prompt: str, system_instruction: Optional[str], provider: str,
                api_key: Optional[str], config: AIProviderConfig) -> str:
     """Run a one-shot agno agent and return its text content."""
     from agno.agent import Agent
+    import rag
     model = _build_model(provider, api_key, config)
     if model is None:
         raise ValueError(f"No agno model could be built for provider '{provider}'.")
@@ -312,7 +313,8 @@ def _run_agent(prompt: str, system_instruction: Optional[str], provider: str,
         markdown=False,
         telemetry=False,
     )
-    result = agent.run(prompt)
+    clean_prompt, _ = rag.anonymize_pii(prompt)
+    result = agent.run(clean_prompt)
     return (result.content or "").strip()
 
 
@@ -340,12 +342,23 @@ MODEL_UNAVAILABLE_MESSAGE = (
 
 
 def _usable_config(db, org_id):
-    """Return (config, api_key) for a usable provider, or (None, None)."""
+    """Return (config, api_key) for a usable, ATTESTED provider, or (None, None).
+
+    Objective (iii): gate every outbound call on TPM2_QUOTE attestation before
+    compliance data is sent, not just display attestation status after the
+    fact. One check here covers every caller (generate_content,
+    generate_structured_json, get_brain_model) instead of one per endpoint.
+    """
     config = get_active_provider_config(db, org_id=org_id)
     if not config:
         return None, None
     api_key = get_decrypted_key(config)
     if not _provider_usable(config.id, api_key):
+        return None, None
+    import attestation
+    report = attestation.attest_provider(config.id, config.model_override or PROVIDER_DEFAULT_MODEL.get(config.id, ""), config.base_url or "")
+    if not report["attested"]:
+        logger.error("Provider '%s' failed attestation, refusing to send data: %s", config.id, report["policy_violations"])
         return None, None
     return config, api_key
 
