@@ -8,13 +8,12 @@ from vertexai.preview.tuning import sft
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-PROJECT_ID = "claude-code-501412"
-LOCATION = "us-central1"
-BUCKET_NAME = "grc-guard-uploads-claude-code-501412"
-DATA_DIRS = [
-    r"C:\Users\PERFECT DEAL TECH\Downloads\ASOKORE\ASOKORE\2022",
-    r"C:\Users\PERFECT DEAL TECH\Downloads\ASOKORE\ASOKORE\2026"
-]
+PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "")
+LOCATION = os.environ.get("VERTEX_AI_LOCATION", "us-central1")
+BUCKET_NAME = os.environ.get("GCS_BUCKET", "")
+# Comma-separated local directories of ASOKORE-style vulnerability CSVs. No
+# default: this is user-specific local data, never hardcode a personal path.
+DATA_DIRS = [d for d in os.environ.get("ASOKORE_DATA_DIRS", "").split(",") if d.strip()]
 JSONL_OUTPUT = "asokore_tuning.jsonl"
 GCS_DESTINATION = f"gs://{BUCKET_NAME}/datasets/{JSONL_OUTPUT}"
 
@@ -81,6 +80,9 @@ def extract_data():
     return unique_dataset
 
 def main():
+    if not DATA_DIRS:
+        logging.error("ASOKORE_DATA_DIRS is not set. Export it as a comma-separated list of local directories.")
+        return
     logging.info("1. Extracting data from ASOKORE CSVs...")
     dataset = extract_data()
     

@@ -8,7 +8,11 @@ metadata:
     app.kubernetes.io/component: ingress
   annotations:
     kubernetes.io/ingress.class: gce
-    networking.gke.io/managed-certificates: grc-guard-cert
+    # No managed-certificates annotation: no custom domain is currently DNS-mapped
+    # to this ingress's IP, so a ManagedCertificate would sit stuck in
+    # "Provisioning" forever. Serves over the GCE ingress's plain HTTP endpoint.
+    # Re-add `networking.gke.io/managed-certificates: <name>` once a real
+    # domain's A record points at this ingress's external IP.
 spec:
   rules:
     - http:

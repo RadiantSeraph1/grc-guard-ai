@@ -1,8 +1,0 @@
-apiVersion: networking.gke.io/v1
-kind: ManagedCertificate
-metadata:
-  name: grc-guard-cert
-  namespace: grc-guard
-spec:
-  domains:
-    - grc.radiantinnovatech.com

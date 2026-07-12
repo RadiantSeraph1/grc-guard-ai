@@ -48,10 +48,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import record, write_jsonl, PROCESSED_DIR  # noqa: E402
 
-DEFAULT_ASOKORE_DIRS = [
-    r"C:\Users\PERFECT DEAL TECH\Downloads\ASOKORE\ASOKORE\2022",
-    r"C:\Users\PERFECT DEAL TECH\Downloads\ASOKORE\ASOKORE\2026",
-]
+# No hardcoded personal path: this is local, user-specific data. Set
+# ASOKORE_DATA_DIRS (comma-separated) or pass --asokore-dir explicitly.
+DEFAULT_ASOKORE_DIRS = [d for d in os.environ.get("ASOKORE_DATA_DIRS", "").split(",") if d.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +290,8 @@ def build_asokore_examples(asokore_dirs):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--asokore-dir", action="append", default=None,
-                    help="ASOKORE CSV directory (repeatable). Defaults to the two dirs "
-                         "used by train_vertex_model.py; pass --no-asokore to skip entirely.")
+                    help="ASOKORE CSV directory (repeatable). Defaults to ASOKORE_DATA_DIRS "
+                         "(comma-separated env var); pass --no-asokore to skip entirely.")
     ap.add_argument("--no-asokore", action="store_true", help="Skip the ASOKORE source (portable/CI-safe).")
     ap.add_argument("--out", default=os.path.join(PROCESSED_DIR, "banking_corpus.jsonl"))
     args = ap.parse_args()
