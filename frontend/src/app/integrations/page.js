@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Cloud, Key, Code, Users, X, ShieldAlert, Server, Laptop, Plug,
+  Cloud, Key, Landmark, X, ShieldAlert, Server, Laptop, Plug,
 } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import {
@@ -23,8 +23,7 @@ const descFor = (id) => CONNECTOR_META[id] || "Connect this system to pull live 
 const CATEGORY_ICON = {
   CLOUD: <Cloud size={14} />,
   IDENTITY: <Key size={14} />,
-  DEVELOPER: <Code size={14} />,
-  HRIS: <Users size={14} />,
+  "CORE BANKING": <Landmark size={14} />,
   EDR: <Laptop size={14} />,
 };
 const statusVariantFor = (s) =>
@@ -147,11 +146,11 @@ export default function IntegrationsPage() {
       <PageHeader
         eyebrow="System Connectors"
         title="Integrations Center"
-        description="Securely connect cloud services, repositories, identity managers, and HR systems to pull live evidence."
+        description="Securely connect cloud services, identity managers, core banking systems, and endpoint security to pull live evidence."
       />
 
       <div className="flex border-b border-zinc-800 gap-6 overflow-x-auto">
-        {["ALL", "CLOUD", "IDENTITY", "DEVELOPER", "EDR", "HRIS"].map((cat) => (
+        {["ALL", "CLOUD", "IDENTITY", "CORE BANKING", "EDR"].map((cat) => (
           <button
             key={cat}
             onClick={() => setCategory(cat)}
