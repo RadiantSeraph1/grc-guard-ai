@@ -7,6 +7,7 @@ import re
 import hmac
 import hashlib
 import httpx
+import tempfile
 from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, Form, Header, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,12 +60,12 @@ app.add_middleware(
 # Create database tables immediately on import
 models.Base.metadata.create_all(bind=database.engine)
 
-# SQLite Database for Backward-Compatible Audit Logs. Default to a path beside
-# this file so it works cross-platform — a hardcoded POSIX "/tmp" path broke
-# import on Windows. Override with AUDIT_DB_PATH in deployment (e.g. /tmp on Linux).
-AUDIT_DB = os.environ.get("AUDIT_DB_PATH") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "grc_audit_logs.db"
-)
+# SQLite Database for Backward-Compatible Audit Logs. Use the OS temp dir by
+# default: tempfile.gettempdir() resolves to /tmp on Linux (writable even under
+# the container's runAsNonRoot — /app is not) and to the right per-user temp
+# path on Windows (fixing local dev, where a hardcoded "/tmp" doesn't exist).
+# Override with AUDIT_DB_PATH for a persistent location.
+AUDIT_DB = os.environ.get("AUDIT_DB_PATH") or os.path.join(tempfile.gettempdir(), "grc_audit_logs.db")
 
 def _audit_connect():
     """Open the audit-log SQLite DB with WAL + a busy timeout (C4)."""
