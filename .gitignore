@@ -59,3 +59,4 @@ Thumbs.db
 # k8s Secret manifest — contains real credentials once filled in, never commit.
 # Apply directly to the cluster with `kubectl apply -f k8s/secrets.yaml` instead.
 k8s/secrets.yaml
+k8s/fineract/secret.yaml

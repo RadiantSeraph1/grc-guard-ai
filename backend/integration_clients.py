@@ -363,17 +363,16 @@ class FineractClient:
                                    f"config call failed {mc.status_code}: {mc.text[:120]}"))
 
                 # 2. A strong password validation policy is active.
-                pw = client.get(f"{self._api()}/passwordvalidationpolicies")
+                pw = client.get(f"{self._api()}/passwordpreferences")
                 if pw.status_code == 200:
-                    policies = pw.json() if isinstance(pw.json(), list) else []
-                    active = [p for p in policies if p.get("active")]
-                    strong = any(
-                        (p.get("id") and int(p.get("id")) >= 2)
-                        or "strong" in str(p.get("description", "")).lower()
-                        for p in active
+                    policy = pw.json() if isinstance(pw.json(), dict) else {}
+                    active = bool(policy.get("active"))
+                    strong = active and (
+                        policy.get("key") == "strong"
+                        or "strong" in str(policy.get("description", "")).lower()
                     )
-                    checks.append(("Strong password policy active", bool(active) and strong,
-                                   "" if (active and strong) else
+                    checks.append(("Strong password policy active", strong,
+                                   "" if strong else
                                    ("no active password policy" if not active
                                     else "active policy is the weakest preset")))
                 else:
