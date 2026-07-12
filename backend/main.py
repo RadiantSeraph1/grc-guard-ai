@@ -3098,9 +3098,10 @@ def get_attestation_status(db: Session = Depends(database.get_db), current_user:
             "error": "No active AI provider configured for this organization.",
             "policy_violations": ["No AI provider configured"]
         }
+    model_name = active_config.model_override or ai_gateway.PROVIDER_DEFAULT_MODEL.get(active_config.id, "")
     report = att_module.attest_provider(
-        provider_type=active_config.provider_type,
-        model_name=active_config.model_name or "",
+        provider_type=active_config.id,
+        model_name=model_name,
         base_url=active_config.base_url or ""
     )
     return report
