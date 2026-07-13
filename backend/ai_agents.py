@@ -1,6 +1,7 @@
 import logging
 from sqlalchemy.orm import Session
 from agno.agent import Agent
+from agno.team import Team
 
 from database import SessionLocal
 from models import Control, Framework, Risk
@@ -92,7 +93,7 @@ class ComplianceExplanation(BaseModel):
         description="Minimal change scenario that would flip this compliance decision (per EU AI Act Art. 86 right-to-explanation)."
     )
 
-def create_brain_agent(org_id: str) -> Agent:
+def create_brain_agent(org_id: str) -> Team:
     """Instantiate the GRC Brain multi-agent orchestration layer for the given organization."""
     model = get_brain_model(org_id)
     if not model:
@@ -111,6 +112,12 @@ def create_brain_agent(org_id: str) -> Agent:
         """Retrieve all active risks for the organization."""
         return get_active_risks(org_id)
 
+    # Vertex AI's Gemini quota is dynamically shared across all Google Cloud
+    # customers - a 429 RESOURCE_EXHAUSTED is momentary contention, not a
+    # fixed cap. Retry with backoff on every agent, since a single 429
+    # anywhere in the delegation chain fails the whole query.
+    retry_kwargs = dict(retries=3, delay_between_retries=2, exponential_backoff=True)
+
     # Specialists
     auditor = Agent(
         name="Compliance Auditor",
@@ -119,8 +126,9 @@ def create_brain_agent(org_id: str) -> Agent:
         instructions="Look up frameworks and map them to controls. Evaluate compliance posture.",
         tools=[tool_get_controls],
         markdown=False,
+        **retry_kwargs,
     )
-    
+
     risk_assessor = Agent(
         name="Risk Assessor",
         model=model,
@@ -128,8 +136,9 @@ def create_brain_agent(org_id: str) -> Agent:
         instructions="Review active risks and identify exposures or missing mitigations.",
         tools=[tool_get_risks],
         markdown=False,
+        **retry_kwargs,
     )
-    
+
     researcher = Agent(
         name="Policy Researcher",
         model=model,
@@ -137,6 +146,7 @@ def create_brain_agent(org_id: str) -> Agent:
         instructions="Search the internal knowledge base to answer questions about internal policies.",
         tools=[tool_search_kb],
         markdown=False,
+        **retry_kwargs,
     )
 
     jurisdiction_reconciler = Agent(
@@ -153,12 +163,14 @@ def create_brain_agent(org_id: str) -> Agent:
         ),
         tools=[tool_get_controls, tool_search_kb],
         markdown=False,
+        **retry_kwargs,
     )
 
     # The GRC Brain (Orchestrator)
-    brain = Agent(
+    brain = Team(
         name="GRC Brain",
         model=model,
+        members=[auditor, risk_assessor, researcher, jurisdiction_reconciler],
         description="Master orchestration agent for GRC Auditor.",
         instructions=(
             "You are the central AI Brain for GRC Auditor. You answer user queries about their compliance posture, "
@@ -169,9 +181,9 @@ def create_brain_agent(org_id: str) -> Agent:
             "You MUST synthesize your findings into the strict JSON format defined by your response model to provide "
             "Auditor-ready Explainable AI (XAI) feature attributions. Do NOT output raw markdown."
         ),
-        team=[auditor, risk_assessor, researcher, jurisdiction_reconciler],
-        response_model=ComplianceExplanation,
-        markdown=False
+        output_schema=ComplianceExplanation,
+        markdown=False,
+        **retry_kwargs,
     )
-    
+
     return brain
