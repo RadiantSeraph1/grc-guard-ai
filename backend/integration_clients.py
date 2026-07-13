@@ -98,9 +98,14 @@ class GCPClient:
             from google.oauth2 import service_account
             from google.auth.transport.requests import Request
             info = json.loads(self.service_account_json)
-            # Read-only across GCP so one token covers storage + compute checks.
+            # cloud-platform.read-only covers Storage, but the Compute Engine API
+            # rejects it for firewall listing (ACCESS_TOKEN_SCOPE_INSUFFICIENT) and
+            # requires its own compute.readonly scope - request both.
             creds = service_account.Credentials.from_service_account_info(
-                info, scopes=["https://www.googleapis.com/auth/cloud-platform.read-only"]
+                info, scopes=[
+                    "https://www.googleapis.com/auth/cloud-platform.read-only",
+                    "https://www.googleapis.com/auth/compute.readonly",
+                ]
             )
             creds.refresh(Request())
             return creds.token
