@@ -462,12 +462,21 @@ class WazuhClient:
                 else:
                     checks.append(("No outdated agents", False, f"outdated call failed {od.status_code}"))
 
-                # 3. Manager daemons all running.
+                # 3. Core endpoint-monitoring daemons running. Excludes optional
+                # feature daemons (agentless scanning, syslog output, mail
+                # alerts, external integrations, clustering, reporting) that
+                # are off by default on essentially every real deployment -
+                # checking those too made this fail on any normal install.
+                CORE_DAEMONS = {
+                    "wazuh-analysisd", "wazuh-remoted", "wazuh-syscheckd", "wazuh-execd",
+                    "wazuh-monitord", "wazuh-modulesd", "wazuh-db", "wazuh-apid",
+                    "wazuh-authd", "wazuh-logcollector",
+                }
                 ms = client.get(f"{self.base_url}/manager/status", headers=headers)
                 if ms.status_code == 200:
                     daemons = ms.json().get("data", {}).get("affected_items", [{}])
                     daemon_map = daemons[0] if daemons else {}
-                    stopped = [k for k, v in daemon_map.items() if v not in ("running", "N/A")]
+                    stopped = [k for k, v in daemon_map.items() if k in CORE_DAEMONS and v not in ("running", "N/A")]
                     checks.append(("Security manager healthy", not stopped,
                                    "" if not stopped else f"{len(stopped)} daemons not running: {', '.join(stopped[:5])}"))
                 else:
