@@ -37,4 +37,3 @@ slowapi>=0.1.9
 
 # --- Testing ---
 pytest>=8.2.0
-anthropic>=0.34.0

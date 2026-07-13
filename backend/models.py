@@ -72,7 +72,7 @@ class User(Base):
 class AIProviderConfig(Base):
     __tablename__ = "ai_provider_configs"
 
-    id = Column(String, primary_key=True, index=True) # e.g. 'openai', 'claude', 'gemini', 'groq', etc.
+    id = Column(String, primary_key=True, index=True) # provider id, e.g. 'gemini'
     org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True, index=True)
     api_key = Column(String, nullable=True) # Authenticated encrypted value
     base_url = Column(String, nullable=True)

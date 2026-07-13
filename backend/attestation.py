@@ -44,30 +44,6 @@ PROVIDER_PROFILES = {
         "min_tls_version": "TLS1.3",
         "attestation_level": "cloud_hsm",
     },
-    "claude": {
-        "encryption_in_transit": True,
-        "data_retention_days": 0,
-        "model_version_pinned": True,
-        "region": "us-east1",
-        "min_tls_version": "TLS1.3",
-        "attestation_level": "software",
-    },
-    "groq": {
-        "encryption_in_transit": True,
-        "data_retention_days": 0,
-        "model_version_pinned": False,  # Groq does not pin model versions
-        "region": "us-central1",
-        "min_tls_version": "TLS1.2",
-        "attestation_level": "software",
-    },
-    "inhouse": {
-        "encryption_in_transit": True,
-        "data_retention_days": 0,
-        "model_version_pinned": True,
-        "region": "us-central1",
-        "min_tls_version": "TLS1.2",
-        "attestation_level": "tpm2_simulated",
-    },
 }
 
 

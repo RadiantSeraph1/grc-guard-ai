@@ -2,17 +2,15 @@
 
 Every LLM call in the platform routes through here. The active provider is read
 from the per-organization AIProviderConfig table (configured in Settings or via
-environment variables). Supported providers:
-
-  - **Vertex AI / Gemini** (primary) — Google's Gemini models via Vertex AI.
-  - **In-house** — custom trained GRC model via OpenAI-compatible endpoint.
-  - **Groq** (interim) — fast inference for testing until in-house is ready.
+environment variables). The only supported provider is Vertex AI / Gemini,
+authenticated via Application Default Credentials (the GKE service account's
+Workload Identity binding) - no API key required.
 
 When no provider is usable the gateway returns an explicit "no model available"
 notice instead of fabricated output.
 
-Providers are constructed as agno model objects and executed with an agno Agent,
-giving the whole platform a single, consistent agent runtime.
+The provider is constructed as an agno model object and executed with an agno
+Agent, giving the whole platform a single, consistent agent runtime.
 """
 
 import json
@@ -32,34 +30,16 @@ logger = logging.getLogger(__name__)
 # per-org row (bug C1).
 DEFAULT_COMPANY_ID = os.environ.get("DEFAULT_COMPANY_ID", "bank_enterprise")
 
-# Active AI providers. The platform supports Vertex AI (Gemini), the in-house
-# trained GRC model, and Groq as an interim provider.
+# The only active AI provider: Vertex AI (Gemini).
 PROVIDER_DEFAULT_MODEL = {
-    "gemini":  "gemini-2.0-flash",           # Google Vertex AI
-    "groq":    "llama-3.3-70b-versatile",    # interim, remove once "inhouse" is trained
-    "inhouse": "grc-auditor-v1",             # our own trained GRC model
-    "claude":  "claude-3-5-sonnet-20241022", # Anthropic Claude
+    "gemini": "gemini-2.5-flash",
 }
 
-# Base URLs for the OpenAI-compatible providers (routed through agno's OpenAILike).
-# "inhouse" is configured per deployment via the provider's base_url (e.g. a
-# vLLM / TGI endpoint serving the trained model).
-OPENAI_COMPATIBLE_BASE_URL = {
-    "groq": "https://api.groq.com/openai/v1",
-    "inhouse": "",
-}
-
-OPENAI_COMPATIBLE = set(OPENAI_COMPATIBLE_BASE_URL.keys())
-
-# Vertex AI / Gemini uses its own SDK, not OpenAI-compatible.
+# Vertex AI / Gemini uses its own SDK (agno's Gemini adapter), not OpenAI-compatible.
 VERTEX_AI_PROVIDERS = {"gemini"}
-ANTHROPIC_PROVIDERS = {"claude"}
 
 PROVIDER_ENV_KEYS = {
-    "gemini":  "GEMINI_API_KEY",
-    "groq":    "GROQ_API_KEY",
-    "inhouse": "INHOUSE_API_KEY",   # optional: self-hosted endpoints may need no key
-    "claude":  "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
 }
 
 # Vertex AI configuration
@@ -100,10 +80,9 @@ def get_decrypted_key(config: AIProviderConfig) -> Optional[str]:
 def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderConfig:
     """Resolve the active AI provider configuration, scoped to org.
 
-    If the explicitly-active provider is the local engine (or unset) but an API
-    key is available in the environment, transparently promote the preferred
-    real provider (gemini first, then in-house, then Groq) so configured keys
-    are used automatically.
+    If no provider is explicitly active but Gemini is usable - via a
+    GEMINI_API_KEY env var or Vertex AI Application Default Credentials -
+    transparently activate it so a working deployment needs no manual step.
     """
     # Never operate on ownerless rows: coerce a missing org to the default company
     # so we read and write a single, consistent per-org provider set (bug C1).
@@ -112,16 +91,9 @@ def get_active_provider_config(db: Session, org_id: str = None) -> AIProviderCon
     if config:
         return config
 
-    # No active provider for this org: auto-activate one that has an environment
-    # key. Priority: gemini > inhouse > groq.
-    env_provider = None
-    for pid in ("gemini", "claude", "inhouse", "groq"):
-        if get_env_provider_key(pid):
-            env_provider = pid
-            break
-    # Also check for Vertex AI Application Default Credentials (no key needed)
-    if not env_provider and VERTEX_AI_PROJECT:
-        env_provider = "gemini"
+    # No active provider for this org: auto-activate gemini if it's usable
+    # (env API key, or Vertex AI Application Default Credentials - no key needed).
+    env_provider = "gemini" if (get_env_provider_key("gemini") or VERTEX_AI_PROJECT) else None
 
     if not env_provider:
         return None
@@ -257,14 +229,9 @@ def embed_query(text: str) -> Optional[list]:
 # ---------------------------------------------------------------------------
 
 def _build_model(provider: str, api_key: Optional[str], config: AIProviderConfig):
-    """Construct an agno model object for the provider, or None.
-
-    Supports three provider families:
-    - Vertex AI / Gemini — uses agno's Gemini adapter
-    - OpenAI-compatible (Groq, inhouse) — uses agno's OpenAILike adapter
-    """
+    """Construct an agno model object for the provider (Vertex AI / Gemini), or None."""
     model_id = (config.model_override if config and config.model_override
-                else PROVIDER_DEFAULT_MODEL.get(provider, "grc-auditor-v1"))
+                else PROVIDER_DEFAULT_MODEL.get(provider, PROVIDER_DEFAULT_MODEL["gemini"]))
 
     if provider in VERTEX_AI_PROVIDERS:
         try:
@@ -277,23 +244,7 @@ def _build_model(provider: str, api_key: Optional[str], config: AIProviderConfig
                 location=VERTEX_AI_LOCATION or None,
             )
         except ImportError:
-            # Fallback: try google-genai direct
-            logger.warning("agno.models.google.Gemini not available, trying OpenAI-compatible fallback")
-            return None
-
-    if provider in OPENAI_COMPATIBLE:
-        from agno.models.openai.like import OpenAILike
-        base_url = (config.base_url if config and config.base_url else None) or OPENAI_COMPATIBLE_BASE_URL.get(provider)
-        if not base_url:
-            return None
-        return OpenAILike(id=model_id, api_key=api_key or "not-needed", base_url=base_url)
-
-    if provider in ANTHROPIC_PROVIDERS:
-        try:
-            from agno.models.anthropic import Claude
-            return Claude(id=model_id, api_key=api_key)
-        except ImportError:
-            logger.warning("agno.models.anthropic.Claude not available")
+            logger.warning("agno.models.google.Gemini not available")
             return None
 
     return None
@@ -322,9 +273,6 @@ def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
     # Vertex AI can use Application Default Credentials (ADC) — no key needed.
     if provider in VERTEX_AI_PROVIDERS:
         return bool(api_key or VERTEX_AI_PROJECT)
-    # The in-house self-hosted endpoint may require no API key.
-    if provider == "inhouse":
-        return True
     return bool(api_key)
 
 
@@ -336,8 +284,8 @@ def _provider_usable(provider: str, api_key: Optional[str]) -> bool:
 # deterministic "local evidence" engine that fabricates analysis — callers either
 # get a real model response or this explicit notice.
 MODEL_UNAVAILABLE_MESSAGE = (
-    "No AI model is currently available. Configure Gemini (Vertex AI), "
-    "the in-house model, or Groq in Settings → AI Gateway and try again."
+    "No AI model is currently available. Configure Gemini (Vertex AI) "
+    "in Settings → AI Gateway and try again."
 )
 
 

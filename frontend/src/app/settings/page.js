@@ -8,13 +8,9 @@ import {
 } from "../components/ui";
 
 const PROVIDER_DESC = {
-  inhouse: "Our own trained GRC model, served over an OpenAI-compatible endpoint (set its base URL).",
-  groq: "Interim Groq hosted inference for testing until the in-house model is ready.",
-  gemini: "Google Vertex AI Gemini model. Requires project ID and location configuration.",
-  claude: "Anthropic Claude model for advanced reasoning.",
+  gemini: "Google Vertex AI Gemini model. Authenticates via Application Default Credentials (Workload Identity) — no API key needed.",
 };
-const NO_KEY_REQUIRED = ["inhouse", "gemini"];
-const NEEDS_BASE_URL = ["groq", "inhouse"];
+const NO_KEY_REQUIRED = ["gemini"];
 
 const TABS = [
   { id: "ai", label: "AI Gateway", icon: Cpu },
@@ -156,9 +152,7 @@ export default function SettingsPage() {
                     <div className="flex items-start justify-between">
                       <div>
                         <h4 className="font-semibold text-zinc-100 text-sm uppercase tracking-wide">{p.id.replace("_", " ")}</h4>
-                        <span className="text-xs text-zinc-500 font-mono mt-0.5 block">
-                          {p.id === "inhouse" ? "IN_HOUSE_MODEL" : "OPENAI_ADAPTER"}
-                        </span>
+                        <span className="text-xs text-zinc-500 font-mono mt-0.5 block">VERTEX_AI_ADAPTER</span>
                       </div>
                       {p.is_active && <CheckCircle2 size={15} className="text-indigo-400" />}
                     </div>
@@ -221,16 +215,11 @@ export default function SettingsPage() {
       >
         {configuringProvider && (
           <form onSubmit={handleSaveProvider} className="space-y-4">
-            <Field label="API token / secret key">
-              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-xxxxxxxxxxxxxxxx" className="font-mono" />
+            <Field label="API key (optional — leave blank to use Application Default Credentials)">
+              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="AIza… (optional)" className="font-mono" />
             </Field>
-            {NEEDS_BASE_URL.includes(configuringProvider.id) && (
-              <Field label="Base gateway URL">
-                <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://your-model-endpoint/v1" className="font-mono" />
-              </Field>
-            )}
             <Field label="Model override name">
-              <Input value={modelOverride} onChange={(e) => setModelOverride(e.target.value)} placeholder="grc-auditor-v1 / llama-3.3-70b-versatile" className="font-mono" />
+              <Input value={modelOverride} onChange={(e) => setModelOverride(e.target.value)} placeholder="gemini-2.5-flash" className="font-mono" />
             </Field>
             <div className="flex items-center gap-2 text-xs text-zinc-400 bg-zinc-950 p-3 rounded-lg border border-zinc-800">
               <ShieldAlert size={14} className="shrink-0 text-zinc-500" />

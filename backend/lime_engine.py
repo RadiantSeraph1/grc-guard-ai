@@ -8,7 +8,7 @@ the model — not a hardcoded weight table and not the model's self-reported
 LLM to describe its own reasoning — that is NOT this).
 
 Model-agnostic by design: works against whichever hosted provider is active
-today (Claude, Gemini, Groq, ...). Does not require open model weights, so it
+(currently Vertex AI Gemini). Does not require open model weights, so it
 closes part of Obj. (ii) ahead of Phase 2's attention/SHAP-on-internals work
 (which DOES need open weights).
 

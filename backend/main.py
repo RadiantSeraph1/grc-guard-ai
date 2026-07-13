@@ -37,10 +37,11 @@ SUPER_ADMIN_ACCESS_KEY = os.environ.get("SUPER_ADMIN_ACCESS_KEY", "local-super-a
 SUPER_ADMIN_SESSION_SECRET = os.environ.get("SUPER_ADMIN_SESSION_SECRET", ai_gateway.get_vault_key() or "local-super-admin-session-secret")
 CLERK_SECRET_KEY = os.environ.get("CLERK_SECRET_KEY")
 CLERK_BACKEND_API_URL = os.environ.get("CLERK_BACKEND_API_URL", "https://api.clerk.com/v1")
-# Supported AI providers: Groq (interim, for testing) and "inhouse" (our own
-# trained GRC model). When neither is usable, AI features return an explicit
-# "no model available" notice — there is no fabricated fallback engine.
-AI_PROVIDER_IDS = ["groq", "inhouse"]
+# Supported AI provider: Vertex AI (Gemini), authenticated via the GKE service
+# account's Workload Identity (Application Default Credentials) - no API key
+# needed. When it's not usable, AI features return an explicit "no model
+# available" notice — there is no fabricated fallback engine.
+AI_PROVIDER_IDS = ["gemini"]
 
 app = FastAPI(title="GRC Guard AI Enterprise Compliance Engine API")
 
@@ -423,7 +424,6 @@ def health_check(db: Session = Depends(database.get_db)):
     return {
         "status": "healthy",
         "ai_api_configured": bool(provider_env_key or provider_db_key),
-        "groq_api_configured": bool(os.environ.get("GROQ_API_KEY", "").strip()),
         "gemini_api_configured": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "mode": active_id,
         "clerk_configured": bool(os.environ.get("CLERK_JWKS_URL")),
@@ -580,19 +580,14 @@ def ensure_ai_provider_configs(db: Session, org_id: str) -> list[models.AIProvid
     db.commit()
     configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
     active = next((config for config in configs if config.is_active), None)
-    groq = next((config for config in configs if config.id == "groq"), None)
-    if (
-        os.environ.get("GROQ_API_KEY", "").strip()
-        and groq
-        and not active
-        and not groq.is_active
-    ):
+    gemini = next((config for config in configs if config.id == "gemini"), None)
+    # Vertex AI needs no key (Application Default Credentials via Workload
+    # Identity), so auto-activate it as soon as it exists and nothing else is active.
+    if gemini and not active and not gemini.is_active:
         for config in configs:
-            config.is_active = (config.id == "groq")
-        if not groq.base_url:
-            groq.base_url = "https://api.groq.com/openai/v1/chat/completions"
-        if not groq.model_override:
-            groq.model_override = "llama-3.3-70b-versatile"
+            config.is_active = (config.id == "gemini")
+        if not gemini.model_override:
+            gemini.model_override = ai_gateway.PROVIDER_DEFAULT_MODEL["gemini"]
         db.commit()
         configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
     return configs
@@ -805,7 +800,7 @@ def super_admin_update_ai_provider(id: str, request: SuperAdminAIProviderUpdateR
     if request.api_key is not None and request.api_key.strip():
         provider.api_key = security.encrypt_log(request.api_key, get_required_vault_key())
     if request.activate:
-        if id not in ["inhouse"] and not provider.api_key:
+        if not ai_gateway._provider_usable(id, ai_gateway.get_decrypted_key(provider)):
             raise HTTPException(status_code=400, detail=f"Configure an API key before activating {id}.")
         for item in db.query(models.AIProviderConfig).filter_by(org_id=org_id).all():
             item.is_active = (item.id == id)
@@ -1846,7 +1841,7 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
         "integrations": [{"id": item.id, "name": item.name, "status": item.status} for item in integrations],
         "objectives": objectives,
         "remaining_gaps": [
-            "The in-house trained GRC model (currently served via the interim Groq provider).",
+            "The in-house trained GRC model (currently served via Vertex AI Gemini as the interim provider).",
             "Formal SHAP/LIME/Captum model-internal explanations (current attribution is IR-relevance based).",
             "Expert-labelled empirical validation and Chapter 4-style result tables.",
             "Production database migrations, observability, and deployment hardening."
@@ -1879,8 +1874,8 @@ def get_ai_providers(db: Session = Depends(database.get_db), current_user: model
             "is_active": c.is_active,
             "api_key": masked_key,
             # Usable if a key exists in the DB or the environment, or the
-            # provider needs no key (local engines).
-            "has_key": bool(decrypted) or c.id in ["inhouse"],
+            # provider needs no key (Vertex AI's Application Default Credentials).
+            "has_key": ai_gateway._provider_usable(c.id, decrypted),
             "key_source": "env" if (env_key and not c.api_key) else ("db" if c.api_key else None),
         })
     return result
@@ -1914,15 +1909,11 @@ def activate_ai_provider(id: str, db: Session = Depends(database.get_db), curren
         db.commit()
         db.refresh(target)
         
-    if id not in ["inhouse"]:
-        # Accept a key from the DB OR the environment (.env). Previously only the
-        # DB key was checked, so env-configured providers (e.g. GROQ_API_KEY)
-        # could not be activated from the UI.
-        if not ai_gateway.get_decrypted_key(target):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Add it in .env or here first."
-            )
+    if not ai_gateway._provider_usable(id, ai_gateway.get_decrypted_key(target)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Add it in .env or here first."
+        )
             
     providers = db.query(models.AIProviderConfig).filter_by(org_id=current_user.org_id).all()
     for p in providers:

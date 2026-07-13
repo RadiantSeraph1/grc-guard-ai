@@ -49,11 +49,11 @@ def run_light_migrations():
 DEFAULT_COMPANY_ID = "bank_enterprise"
 DEFAULT_COMPANY_NAME = "Your Organization"
 
-# AI provider catalog: the in-house trained GRC model and Groq (interim, for
-# testing). The active provider is resolved at request time in ai_gateway (Groq is
-# auto-activated while a GROQ_API_KEY is present). When neither is usable, AI
-# features return an explicit "no model available" notice.
-AI_PROVIDER_CATALOG = ["inhouse", "groq"]
+# AI provider catalog: Vertex AI (Gemini) only, authenticated via Application
+# Default Credentials - no API key needed. The active provider is resolved at
+# request time in ai_gateway (gemini auto-activates once usable). When it's
+# not usable, AI features return an explicit "no model available" notice.
+AI_PROVIDER_CATALOG = ["gemini"]
 
 
 def ensure_ai_providers(db: Session, org_id: str):
