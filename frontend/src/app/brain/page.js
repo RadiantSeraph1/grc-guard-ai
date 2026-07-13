@@ -5,6 +5,32 @@ import { Brain, Send, ShieldAlert, Sparkles, CheckCircle, XCircle, AlertTriangle
 import { useApi } from "../lib/api";
 import { PageContainer, PageHeader, Card, Button, cn } from "../components/ui";
 
+// Decisions come back as either a clean enum (COMPLIANT / NON_COMPLIANT /
+// ASSESSMENT_REQUIRES_MORE_INFORMATION) or free-form text ("Unable to
+// assess..."). A decision that isn't clearly compliant or a violation is
+// inconclusive, not a pass — treat it as its own neutral state.
+function classifyDecision(decision) {
+  const d = (decision || "").toUpperCase();
+  if (/(NON.?COMPLIANT|VIOLATION|BREACH|\bFAIL)/.test(d)) return "violation";
+  if (/^COMPLIANT\b/.test(d)) return "compliant";
+  return "neutral";
+}
+
+// Enum-like tokens ("ASSESSMENT_REQUIRES_MORE_INFORMATION") have no spaces,
+// so they don't wrap and overflow the card — convert to Title Case. Natural
+// sentences ("Unable to assess...") are left untouched.
+function humanizeDecision(decision) {
+  if (!decision) return "Unknown";
+  if (!/^[A-Z0-9_]+$/.test(decision)) return decision;
+  return decision.split("_").map((w) => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
+}
+
+const DECISION_STATUS_STYLES = {
+  compliant: { card: "bg-emerald-950/20 border-emerald-900/50", text: "text-emerald-400", Icon: CheckCircle, icon: "text-emerald-500" },
+  violation: { card: "bg-rose-950/20 border-rose-900/50", text: "text-rose-400", Icon: XCircle, icon: "text-rose-500" },
+  neutral: { card: "bg-amber-950/20 border-amber-900/50", text: "text-amber-400", Icon: AlertTriangle, icon: "text-amber-500" },
+};
+
 function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState, onLimeExplain }) {
   if (!data) return null;
 
@@ -19,7 +45,7 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
 
   const { decision, confidence_score, feature_attributions, jurisdictional_conflicts, counterfactual } = data;
 
-  const isCompliant = decision?.toUpperCase().includes("NON") ? false : true;
+  const status = DECISION_STATUS_STYLES[classifyDecision(decision)];
   const hasConflicts = jurisdictional_conflicts && jurisdictional_conflicts.length > 0;
 
   return (
@@ -28,13 +54,13 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         
         {/* Decision Card */}
-        <div className={`p-6 rounded-xl border ${isCompliant ? 'bg-emerald-950/20 border-emerald-900/50' : 'bg-rose-950/20 border-rose-900/50'} relative overflow-hidden`}>
+        <div className={`p-6 rounded-xl border ${status.card} relative overflow-hidden`}>
           <div className="flex items-center space-x-3 mb-2">
-            {isCompliant ? <CheckCircle className="text-emerald-500 h-6 w-6" /> : <XCircle className="text-rose-500 h-6 w-6" />}
+            <status.Icon className={`${status.icon} h-6 w-6 shrink-0`} />
             <h3 className="font-semibold text-lg text-zinc-100">AI Decision</h3>
           </div>
-          <p className={`text-2xl font-bold ${isCompliant ? 'text-emerald-400' : 'text-rose-400'}`}>
-            {decision || "Unknown"}
+          <p className={`text-xl font-bold leading-snug break-words ${status.text}`}>
+            {humanizeDecision(decision)}
           </p>
           <div className="absolute -right-4 -bottom-4 opacity-10">
             <ShieldAlert className="h-32 w-32" />
@@ -48,7 +74,7 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
               <Sparkles className="h-4 w-4 mr-2 text-indigo-400" />
               Model Confidence (self-reported)
             </h3>
-            <span className="text-2xl font-bold text-zinc-100">{confidence_score}%</span>
+            <span className="text-2xl font-bold text-zinc-100">{confidence_score ?? 0}%</span>
           </div>
           <div className="w-full bg-zinc-800 rounded-full h-3 overflow-hidden">
             <div
