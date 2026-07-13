@@ -1,0 +1,148 @@
+# Wazuh manager only, self-hosted in-cluster for demo/audit purposes — no
+# indexer/dashboard (SIEM search UI), since the connector only calls the
+# manager's own REST API (agents, outdated agents, daemon status), none of
+# which need the indexer. ClusterIP only: no ingress, only grc-backend reaches
+# it, same as the Fineract demo instance.
+#
+# ponytail: no PersistentVolumeClaim - a lost agent enrollment on pod restart
+# is an acceptable demo-only simplification; add a PVC at /var/ossec if this
+# ever needs to survive restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wazuh-manager
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: wazuh-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grc-guard
+      app.kubernetes.io/component: wazuh-demo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grc-guard
+        app.kubernetes.io/component: wazuh-demo
+    spec:
+      containers:
+        - name: wazuh-manager
+          image: wazuh/wazuh-manager:4.14.6
+          ports:
+            - containerPort: 1514
+            - containerPort: 1515
+            - containerPort: 55000
+          envFrom:
+            - secretRef:
+                name: wazuh-secrets
+          volumeMounts:
+            - name: ossec-conf
+              mountPath: /wazuh-config-mount/etc/ossec.conf
+              subPath: ossec.conf
+          readinessProbe:
+            tcpSocket:
+              port: 55000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 10
+          livenessProbe:
+            tcpSocket:
+              port: 55000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 10
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "300m"
+              ephemeral-storage: "8Gi"
+            limits:
+              memory: "1.5Gi"
+              cpu: "1000m"
+              ephemeral-storage: "8Gi"
+      volumes:
+        - name: ossec-conf
+          configMap:
+            name: wazuh-manager-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wazuh-manager
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: wazuh-demo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: wazuh-demo
+  ports:
+    - name: registration
+      port: 1514
+      targetPort: 1514
+    - name: authd
+      port: 1515
+      targetPort: 1515
+    - name: api
+      port: 55000
+      targetPort: 55000
+---
+# A single self-enrolled demo agent so the sensor-coverage check has a real
+# endpoint to report on instead of a vacuous "no agents enrolled".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wazuh-agent-demo
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: wazuh-demo-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grc-guard
+      app.kubernetes.io/component: wazuh-demo-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grc-guard
+        app.kubernetes.io/component: wazuh-demo-agent
+    spec:
+      initContainers:
+        - name: wait-for-manager
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z wazuh-manager 1515; do echo waiting for wazuh-manager; sleep 3; done"]
+      containers:
+        - name: wazuh-agent
+          image: wazuh/wazuh-agent:4.14.6
+          env:
+            # The wazuh-agent image's actual config var is WAZUH_MANAGER_SERVER
+            # (confirmed against the official wazuh-docker compose) - not
+            # WAZUH_MANAGER, which is a different, agent-registration-only var
+            # that also collides with Kubernetes' auto-injected legacy
+            # WAZUH_MANAGER_PORT=tcp://<clusterIP>:1514 for a Service named
+            # "wazuh-manager".
+            - name: WAZUH_MANAGER_SERVER
+              value: "wazuh-manager"
+            # Kubernetes auto-injects WAZUH_MANAGER_PORT=tcp://<clusterIP>:1514
+            # for the Service named "wazuh-manager" (legacy Docker-links var),
+            # which the agent entrypoint also reads expecting a bare port
+            # number - override it explicitly.
+            - name: WAZUH_MANAGER_PORT
+              value: "1514"
+            - name: WAZUH_AGENT_NAME
+              value: "grc-guard-demo-endpoint"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "384Mi"
+              cpu: "300m"
