@@ -43,6 +43,10 @@ def run_light_migrations():
                     conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN regulatory_version VARCHAR"))
                 if "pii_redaction_count" not in cols:
                     conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN pii_redaction_count INTEGER"))
+                if "effective_date" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN effective_date VARCHAR"))
+                if "expiration_date" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN expiration_date VARCHAR"))
     except Exception as e:
         print(f"Light migration skipped: {e}")
 

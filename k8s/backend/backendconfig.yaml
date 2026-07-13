@@ -1,0 +1,15 @@
+# GCE ingress defaults to a 30s backend timeout, which the multi-agent GRC
+# Brain (orchestrator delegating to up to 4 specialist agents, each with
+# retries) can legitimately exceed on its own, before any Vertex AI
+# contention. Raise it so a slow-but-successful Brain query isn't cut off
+# mid-flight and surfaced to the user as a connection failure.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: grc-backend-config
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: backend
+spec:
+  timeoutSec: 180

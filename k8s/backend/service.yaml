@@ -6,6 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: grc-guard
     app.kubernetes.io/component: backend
+  annotations:
+    cloud.google.com/backend-config: '{"default": "grc-backend-config"}'
 spec:
   type: ClusterIP
   selector:
