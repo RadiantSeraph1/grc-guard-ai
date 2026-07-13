@@ -236,14 +236,34 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
   );
 }
 
+const BRAIN_HISTORY_KEY = "grc_brain_chat_history";
+
 export default function BrainPage() {
   const api = useApi();
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      return JSON.parse(localStorage.getItem(BRAIN_HISTORY_KEY)) || [];
+    } catch {
+      return [];
+    }
+  });
   const [feedbackByIdx, setFeedbackByIdx] = useState({});
   const [limeByIdx, setLimeByIdx] = useState({});
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    localStorage.setItem(BRAIN_HISTORY_KEY, JSON.stringify(history));
+  }, [history]);
+
+  const clearHistory = () => {
+    setHistory([]);
+    setFeedbackByIdx({});
+    setLimeByIdx({});
+    localStorage.removeItem(BRAIN_HISTORY_KEY);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -301,10 +321,19 @@ export default function BrainPage() {
 
   return (
     <PageContainer>
-      <PageHeader 
-        title="GRC AI Brain" 
+      <PageHeader
+        title="GRC AI Brain"
         description="Multi-agent GRC reasoning engine with LIME-based XAI attributions, cross-jurisdictional conflict detection, and EU AI Act Art. 86 counterfactual explanations."
         icon={Brain}
+        actions={history.length > 0 && (
+          <button
+            type="button"
+            onClick={clearHistory}
+            className="text-xs text-zinc-500 hover:text-zinc-200 border border-zinc-800 hover:border-zinc-700 rounded-lg px-3 py-1.5 transition-colors cursor-pointer"
+          >
+            Clear history
+          </button>
+        )}
       />
 
       <div className="flex flex-col h-[calc(100vh-220px)] w-full max-w-5xl mx-auto">
