@@ -2321,7 +2321,8 @@ def get_risks(department: Optional[str] = Query(None), db: Session = Depends(dat
             "residual_score": risk.residual_score,
             "status": risk.status,
             "owner_id": risk.owner_id,
-            "department": owner_dept.get(risk.owner_id, "Unassigned")
+            "department": owner_dept.get(risk.owner_id, "Unassigned"),
+            "mitigations": [{"id": c.id, "control_code": c.control_code} for c in risk.mitigations],
         })
     return result
 

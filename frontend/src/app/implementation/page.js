@@ -43,7 +43,7 @@ export default function ImplementationPage() {
             <StatCard label="Completion" value={`${report?.overall_completion ?? 0}%`} icon={ShieldCheck} footer={report?.implementation_level || "—"} accent={(report?.overall_completion ?? 0) >= 70 ? "success" : "warning"} />
             <StatCard label="Controls" value={report?.controls_count ?? 0} icon={Database} footer={`${report?.risks_count ?? 0} risks mapped`} />
             <StatCard label="Departments" value={report?.departments?.length ?? 0} icon={CircleDashed} footer={(report?.departments || []).join(", ") || "None"} />
-            <StatCard label="Connectors" value={integrations.length} icon={Plug} footer={integrations.length ? integrations.slice(0, 6).join(", ") : "None connected"} />
+            <StatCard label="Connectors" value={integrations.length} icon={Plug} footer={integrations.length ? integrations.slice(0, 6).map((i) => i.name).join(", ") : "None connected"} />
           </>
         )}
       </div>
