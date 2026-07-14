@@ -40,17 +40,17 @@ def get_framework_controls(framework_name: str, org_id: str) -> str:
         if not framework:
             return f"Framework matching '{framework_name}' not found."
         
-        controls = db.query(Control).filter(
-            Control.framework_id == framework.id,
-            Control.org_id == org_id
-        ).all()
-        
+        # Control.frameworks is a CSV of framework ids (see framework_library.py),
+        # not a foreign key - there is no Control.framework_id column.
+        all_controls = db.query(Control).filter(Control.org_id == org_id).all()
+        controls = [c for c in all_controls if framework.id in (c.frameworks or "").split(",")]
+
         if not controls:
             return f"No controls mapped to framework {framework.name}."
-            
+
         res = [f"Framework: {framework.name}"]
         for c in controls:
-            res.append(f"- [{c.status}] {c.control_id}: {c.description}")
+            res.append(f"- [{c.status}] {c.control_code}: {c.description}")
         return "\n".join(res)
     finally:
         db.close()
