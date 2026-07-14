@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Table, LargeBinary, Text
+from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Table, LargeBinary, Text, JSON
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -80,6 +80,16 @@ class AIProviderConfig(Base):
     is_active = Column(Boolean, default=False)
 
     organization = relationship("Organization", back_populates="ai_configs")
+
+class BrainConversation(Base):
+    __tablename__ = "brain_conversations"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    title = Column(String, nullable=True)
+    messages = Column(JSON, nullable=False, default=list)  # [{role, content}, ...] - mirrors the frontend's history array 1:1
+    created_at = Column(Integer)
+    updated_at = Column(Integer, index=True)
 
 class Integration(Base):
     __tablename__ = "integrations"

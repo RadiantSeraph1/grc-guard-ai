@@ -1005,24 +1005,66 @@ def run_compliance_analysis(request: AnalysisRequest, db: Session = Depends(data
 
 class BrainChatRequest(BaseModel):
     query: str
+    conversation_id: Optional[str] = None
+
+BRAIN_ROLE_DEP = auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])
+
+@app.get("/api/brain/conversations")
+def list_brain_conversations(db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convos = (
+        db.query(models.BrainConversation)
+        .filter_by(org_id=current_user.org_id)
+        .order_by(models.BrainConversation.updated_at.desc())
+        .all()
+    )
+    return [{"id": c.id, "title": c.title or "New conversation", "updated_at": c.updated_at} for c in convos]
+
+@app.get("/api/brain/conversations/{id}")
+def get_brain_conversation(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convo = db.query(models.BrainConversation).filter_by(id=id, org_id=current_user.org_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"id": convo.id, "title": convo.title, "messages": convo.messages or []}
+
+@app.delete("/api/brain/conversations/{id}")
+def delete_brain_conversation(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convo = db.query(models.BrainConversation).filter_by(id=id, org_id=current_user.org_id).first()
+    if convo:
+        db.delete(convo)
+        db.commit()
+    return {"status": "success"}
 
 @app.post("/api/brain/chat")
-def run_brain_chat(request: BrainChatRequest, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+def run_brain_chat(request: BrainChatRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
     import ai_agents
+    convo = None
+    if request.conversation_id:
+        convo = db.query(models.BrainConversation).filter_by(id=request.conversation_id, org_id=current_user.org_id).first()
+    if not convo:
+        convo = models.BrainConversation(
+            id=str(uuid.uuid4()), org_id=current_user.org_id, messages=[],
+            title=request.query[:60], created_at=int(time.time()),
+        )
+        db.add(convo)
+
     try:
         brain = ai_agents.create_brain_agent(current_user.org_id)
         # We run the ReAct loop which leverages the tools and the sub-agents
         response = brain.run(request.query)
         # response.content will be an instance of ComplianceExplanation (XAI Schema)
-        if hasattr(response.content, 'model_dump'):
-            return response.content.model_dump()
-        return {"response": response.content}
+        payload = response.content.model_dump() if hasattr(response.content, 'model_dump') else {"response": response.content}
     except ValueError as e:
         # e.g., missing AI provider
-        return {"error": str(e)}
+        payload = {"error": str(e)}
     except Exception as e:
         print(f"Error in Brain Chat: {e}")
-        return {"error": "The GRC Brain encountered an error while processing your request."}
+        payload = {"error": "The GRC Brain encountered an error while processing your request."}
+
+    convo.messages = [*(convo.messages or []), {"role": "user", "content": request.query}, {"role": "brain", "content": payload}]
+    convo.updated_at = int(time.time())
+    db.commit()
+
+    return {**payload, "conversation_id": convo.id}
 
 class ScanRequest(BaseModel):
     text: str

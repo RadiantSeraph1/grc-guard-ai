@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Brain, Send, ShieldAlert, Sparkles, CheckCircle, XCircle, AlertTriangle, Fingerprint, GitMerge, FlipHorizontal, ThumbsUp, ThumbsDown, FlaskConical } from "lucide-react";
+import { Brain, Send, ShieldAlert, Sparkles, CheckCircle, XCircle, AlertTriangle, Fingerprint, GitMerge, FlipHorizontal, ThumbsUp, ThumbsDown, FlaskConical, Plus, Trash2, MessageSquare } from "lucide-react";
 import { useApi } from "../lib/api";
 import { PageContainer, PageHeader, Card, Button, cn } from "../components/ui";
 
@@ -236,34 +236,67 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
   );
 }
 
-const BRAIN_HISTORY_KEY = "grc_brain_chat_history";
-
 export default function BrainPage() {
   const api = useApi();
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      return JSON.parse(localStorage.getItem(BRAIN_HISTORY_KEY)) || [];
-    } catch {
-      return [];
-    }
-  });
+  const [conversations, setConversations] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [history, setHistory] = useState([]);
   const [feedbackByIdx, setFeedbackByIdx] = useState({});
   const [limeByIdx, setLimeByIdx] = useState({});
   const bottomRef = useRef(null);
 
-  useEffect(() => {
-    localStorage.setItem(BRAIN_HISTORY_KEY, JSON.stringify(history));
-  }, [history]);
+  const refreshConversations = async () => {
+    try {
+      const data = await api.get("/api/brain/conversations");
+      const list = Array.isArray(data) ? data : [];
+      setConversations(list);
+      return list;
+    } catch {
+      return [];
+    }
+  };
 
-  const clearHistory = () => {
+  const startNewChat = () => {
+    setActiveId(null);
     setHistory([]);
     setFeedbackByIdx({});
     setLimeByIdx({});
-    localStorage.removeItem(BRAIN_HISTORY_KEY);
   };
+
+  const loadConversation = async (id) => {
+    try {
+      const data = await api.get(`/api/brain/conversations/${id}`);
+      setActiveId(id);
+      setHistory(Array.isArray(data.messages) ? data.messages : []);
+      setFeedbackByIdx({});
+      setLimeByIdx({});
+    } catch {
+      startNewChat();
+    }
+  };
+
+  const deleteConversation = async (id, e) => {
+    e.stopPropagation();
+    try {
+      await api.del(`/api/brain/conversations/${id}`);
+    } catch {
+      // list refresh below reconciles either way
+    }
+    if (id === activeId) startNewChat();
+    refreshConversations();
+  };
+
+  useEffect(() => {
+    (async () => {
+      const list = await refreshConversations();
+      if (list.length > 0) loadConversation(list[0].id);
+    })();
+    // Only ever run once on mount - refreshConversations/loadConversation
+    // intentionally aren't in the dep array (they'd re-run this on every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -276,12 +309,15 @@ export default function BrainPage() {
     setLoading(true);
 
     try {
-      const data = await api.post("/api/brain/chat", { query: userMsg });
+      const data = await api.post("/api/brain/chat", { query: userMsg, conversation_id: activeId });
+      const { conversation_id, ...rest } = data;
 
       // Data might be wrapped in { response: ... } or return the JSON directly
-      const payload = data.response || data;
+      const payload = rest.response || rest;
 
       setHistory([...newHistory, { role: "brain", content: payload }]);
+      if (conversation_id && conversation_id !== activeId) setActiveId(conversation_id);
+      refreshConversations();
     } catch (err) {
       setHistory([...newHistory, { role: "brain", content: { error: "Failed to connect to GRC Brain." } }]);
     } finally {
@@ -325,22 +361,56 @@ export default function BrainPage() {
         title="GRC AI Brain"
         description="Multi-agent GRC reasoning engine with LIME-based XAI attributions, cross-jurisdictional conflict detection, and EU AI Act Art. 86 counterfactual explanations."
         icon={Brain}
-        actions={history.length > 0 && (
-          <button
-            type="button"
-            onClick={clearHistory}
-            className="text-xs text-zinc-500 hover:text-zinc-200 border border-zinc-800 hover:border-zinc-700 rounded-lg px-3 py-1.5 transition-colors cursor-pointer"
-          >
-            Clear history
-          </button>
-        )}
       />
 
-      <div className="flex flex-col h-[calc(100vh-220px)] w-full max-w-5xl mx-auto">
-        
+      <div className="flex gap-5 h-[calc(100vh-220px)] w-full max-w-6xl mx-auto">
+
+        {/* Conversation sidebar */}
+        <div className="w-56 shrink-0 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={startNewChat}
+            className="flex items-center gap-2 text-xs font-medium text-zinc-200 bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 rounded-lg px-3 py-2 transition-colors cursor-pointer"
+          >
+            <Plus size={14} /> New chat
+          </button>
+          <div className="flex-1 overflow-y-auto space-y-1 pr-1 scrollbar-thin scrollbar-thumb-zinc-800">
+            {conversations.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => loadConversation(c.id)}
+                className={cn(
+                  "group w-full flex items-center gap-2 text-left text-xs px-3 py-2 rounded-lg border transition-colors cursor-pointer",
+                  c.id === activeId
+                    ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-200"
+                    : "border-transparent text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                )}
+              >
+                <MessageSquare size={12} className="shrink-0 opacity-60" />
+                <span className="truncate flex-1">{c.title}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => deleteConversation(c.id, e)}
+                  className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-rose-400 shrink-0"
+                  title="Delete conversation"
+                >
+                  <Trash2 size={12} />
+                </span>
+              </button>
+            ))}
+            {conversations.length === 0 && (
+              <p className="text-xs text-zinc-600 px-3 py-2">No past conversations yet.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-col flex-1 min-w-0">
+
         {/* Chat Area */}
         <div className="flex-1 overflow-y-auto pr-2 space-y-8 pb-4 scrollbar-thin scrollbar-thumb-zinc-800">
-          
+
           {history.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center text-zinc-500 space-y-4">
               <Brain className="h-16 w-16 text-zinc-800" />
@@ -430,6 +500,7 @@ export default function BrainPage() {
           </p>
         </div>
 
+        </div>
       </div>
     </PageContainer>
   );
