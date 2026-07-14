@@ -65,7 +65,7 @@ def get_active_risks(org_id: str) -> str:
             return "No open risks found."
         res = []
         for r in risks:
-            res.append(f"- {r.name} (Severity: {r.severity}, Score: {r.risk_score})\n  Desc: {r.description}")
+            res.append(f"- {r.title} (Category: {r.category}, Inherent: {r.inherent_score}, Residual: {r.residual_score})")
         return "\n".join(res)
     finally:
         db.close()
