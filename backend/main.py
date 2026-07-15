@@ -1856,13 +1856,13 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
             "name": "Policy-conformant API and BYOK architecture",
             "status": "Partially implemented",
             "coverage": 68,
-            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, configurable AI providers, but no hardware attestation."
+            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, Vertex AI via Workload Identity (no API keys), attestation-gated outbound AI calls (software TPM simulation, not hardware)."
         },
         {
             "name": "Real system integration evidence",
-            "status": "Partially implemented",
-            "coverage": 64,
-            "evidence": "GitHub, AWS, Okta, and Auth0 credential paths exist. Live evidence depends on valid read-only credentials."
+            "status": "Implemented with live connectors",
+            "coverage": 80,
+            "evidence": "GCP, Google Workspace, Apache Fineract (core banking), and Wazuh (EDR) connectors pull live audit evidence with real read-only credentials."
         },
         {
             "name": "Production readiness",
