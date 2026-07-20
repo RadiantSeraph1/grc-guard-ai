@@ -61,6 +61,7 @@ steps:
     args:
       - 'run'
       - '--filename=k8s/'
+      - '--recursive'
       - '--location=${_GKE_ZONE}'
       - '--cluster=${_GKE_CLUSTER}'
       - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:localbuild'
@@ -68,6 +69,27 @@ steps:
     waitFor:
       - 'push-backend'
       - 'push-frontend'
+
+  # ── Step 5: Force both Deployments to pick up the freshly pushed :latest
+  # image. gke-deploy's digest-pinning above is unreliable for grc-backend
+  # (observed repeatedly: it substitutes the frontend image's digest but not
+  # backend's, so `kubectl apply` sees no spec diff and never restarts
+  # backend's pods even though a new image was just pushed to :latest). A
+  # rollout restart is deterministic regardless of that flakiness.
+  - name: 'gcr.io/cloud-builders/kubectl'
+    id: 'restart-rollout'
+    args:
+      - 'rollout'
+      - 'restart'
+      - 'deployment/grc-backend'
+      - 'deployment/grc-frontend'
+      - '-n'
+      - 'grc-guard'
+    env:
+      - 'CLOUDSDK_COMPUTE_REGION=${_GKE_ZONE}'
+      - 'CLOUDSDK_CONTAINER_CLUSTER=${_GKE_CLUSTER}'
+    waitFor:
+      - 'deploy-to-gke'
 
 # ── Images to be stored in Artifact Registry ──
 images:

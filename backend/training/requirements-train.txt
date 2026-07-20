@@ -19,7 +19,15 @@ transformers>=4.40
 torch>=2.2
 
 # --- Task 3 / Phase 1 (LoRA/QLoRA domain fine-tune, train_lora.py) ---
+# GPU-only path - GPUS_ALL_REGIONS quota was denied on this project, so this
+# path is unused for now. vertex_finetune.py (below) replaces it and needs
+# NONE of these deps.
 peft>=0.11
 trl>=0.9
 accelerate>=0.30
 bitsandbytes>=0.43   # 4-bit quantization for QLoRA; Linux/CUDA only (Colab/GCP V100, not local Windows dev)
+
+# --- Phase 1 (GPU-free), vertex_finetune.py ---
+# No extra deps: google-genai, google-cloud-aiplatform, google-cloud-storage
+# are already in backend/requirements.txt (the app's own venv). Run
+# vertex_finetune.py from that venv, not this one.

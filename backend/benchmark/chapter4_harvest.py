@@ -15,7 +15,9 @@ Run inside the deployed backend pod (needs its DB + Vertex identity):
 
 Nothing here fabricates numbers: every figure is computed live.
 """
+import contextlib
 import json
+import sys
 import time
 
 import database
@@ -89,15 +91,23 @@ def section_brain():
         for run in range(1, BRAIN_RUNS + 1):
             start = time.time()
             try:
-                brain = ai_agents.create_brain_agent(ORG)
-                resp = brain.run(q)
+                # agno's rich console logs to stdout - shunt them to stderr so
+                # they don't interleave with the markdown tables.
+                with contextlib.redirect_stdout(sys.stderr):
+                    brain = ai_agents.create_brain_agent(ORG)
+                    resp = brain.run(q)
                 d = resp.content
-                decision, conf = d.decision, d.confidence_score
+                if hasattr(d, "decision"):
+                    decision, conf = d.decision, d.confidence_score
+                else:
+                    # Exhausted retries surface the provider error as a raw string.
+                    decision, conf = "PROVIDER_QUOTA_EXHAUSTED (429)", "-"
             except Exception as e:
                 decision, conf = f"ERROR: {e}"[:60], "-"
             latency = round(time.time() - start, 1)
             decisions.append(str(decision)[:40])
-            print(f"| {q[:45]} | {run} | {str(decision)[:60]} | {conf} | {latency} |")
+            print(f"| {q[:45]} | {run} | {str(decision)[:60]} | {conf} | {latency} |", flush=True)
+            time.sleep(15)  # ease Vertex shared-pool contention between runs
         agreement.append((q, len(set(decisions)) == 1))
     print()
     agreed = sum(1 for _, a in agreement if a)

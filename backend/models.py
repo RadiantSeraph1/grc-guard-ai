@@ -28,6 +28,7 @@ class Organization(Base):
     notifications = relationship("Notification", back_populates="organization", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="organization", cascade="all, delete-orphan")
     feedback_entries = relationship("Feedback", back_populates="organization", cascade="all, delete-orphan")
+    remediation_actions = relationship("RemediationAction", back_populates="organization", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -78,6 +79,12 @@ class AIProviderConfig(Base):
     base_url = Column(String, nullable=True)
     model_override = Column(String, nullable=True)
     is_active = Column(Boolean, default=False)
+
+    # Vertex AI managed fine-tuning job tracking (see docs/VERTEX_FINETUNING.md).
+    tuning_status = Column(String, nullable=True)       # QUEUED | RUNNING | SUCCEEDED | FAILED
+    tuning_job_name = Column(String, nullable=True)     # Vertex TuningJob resource name
+    tuning_result_model = Column(String, nullable=True) # tuned model resource name, once SUCCEEDED
+    tuning_error = Column(String, nullable=True)
 
     organization = relationship("Organization", back_populates="ai_configs")
 
@@ -367,3 +374,26 @@ class Feedback(Base):
     created_at = Column(Integer)
 
     organization = relationship("Organization", back_populates="feedback_entries")
+
+
+class RemediationAction(Base):
+    """A Mechanic-agent-proposed write to compliance state (Inspector-Mechanic
+    architecture, Phase 4). The Mechanic never writes Control/Risk status
+    directly - it proposes a change here, and an Admin approves or rejects it.
+    Applying an approved action also writes a ControlStatusEvent(source=
+    'mechanic_agent') so it shows up in the existing drift/history trail.
+    """
+    __tablename__ = "remediation_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    target_type = Column(String, nullable=False)  # "control" | "risk"
+    target_id = Column(String, nullable=False)
+    proposed_status = Column(String, nullable=False)
+    rationale = Column(String, nullable=False)
+    status = Column(String, default="PROPOSED")  # PROPOSED, APPROVED, REJECTED, APPLIED
+    proposed_at = Column(Integer)
+    decided_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    decided_at = Column(Integer, nullable=True)
+
+    organization = relationship("Organization", back_populates="remediation_actions")

@@ -34,7 +34,7 @@ export default function AttestationPage() {
       <PageHeader
         eyebrow="Policy-Compliant API"
         title="Attestation & Policy Status"
-        description="Verifies the active LLM provider against internal security policy — encryption in transit, zero data retention, pinned model version, approved region — via a simulated TPM2_QUOTE before compliance data is sent. Per EU AI Act Art. 9 (Risk Management) + Art. 13 (Transparency)."
+        description="Verifies the active LLM provider against internal security policy — encryption in transit, zero data retention, pinned model version, approved region — via workload attestation before compliance data is sent. Per EU AI Act Art. 9 (Risk Management) + Art. 13 (Transparency)."
         actions={<Button icon={RotateCw} loading={loading} onClick={fetchStatus}>Re-check</Button>}
       />
 
@@ -66,7 +66,7 @@ export default function AttestationPage() {
               value={report.quote_verified ? "Yes" : "No"}
               icon={Fingerprint}
               tone={report.quote_verified ? "success" : "danger"}
-              footer="TPM2_QUOTE (simulated)"
+              footer={report.quote_method === "gcp_signed_identity_token" ? "Google-signed identity token" : "TPM2_QUOTE (software-simulated)"}
             />
             <StatusTile
               label="Policy"
@@ -87,6 +87,14 @@ export default function AttestationPage() {
               <DetailField label="Quote Signature" value={report.quote_signature} mono />
               <DetailField label="Nonce" value={report.nonce} mono />
               <DetailField label="Attested At" value={report.timestamp_human} />
+              {report.workload_identity && (
+                <>
+                  <DetailField label="GCP Service Account" value={report.workload_identity.service_account} mono />
+                  <DetailField label="GCE Instance" value={report.workload_identity.instance} mono />
+                  <DetailField label="GCP Project" value={report.workload_identity.project_id} mono />
+                  <DetailField label="Token Issuer" value={report.workload_identity.issuer} mono />
+                </>
+              )}
             </div>
           </Card>
 

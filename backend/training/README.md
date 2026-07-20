@@ -53,11 +53,21 @@ python backend/training/scripts/build_banking_corpus.py
 #    -> data/processed/banking_corpus.jsonl  (gitignored — contains real IPs/org name if ASOKORE included)
 python backend/training/scripts/build_banking_corpus.py --no-asokore   # portable/CI-safe variant
 
-# 6. QLoRA fine-tune on the banking corpus (needs a CUDA GPU — Colab T4/A100 or
-#    a GCP V100; will not run on CPU or a local Windows dev machine).
+# 6a. QLoRA fine-tune on the banking corpus (needs a CUDA GPU — Colab T4/A100 or
+#     a GCP V100; will not run on CPU or a local Windows dev machine). Blocked
+#     on this project: GPUS_ALL_REGIONS quota request was denied.
 python backend/training/scripts/train_lora.py --epochs 3
 #    -> artifacts/banking-lora/ (adapter) + eval_before_after.json
 python backend/training/scripts/train_lora.py --eval-only --adapter artifacts/banking-lora  # score only
+
+# 6b. GPU-free alternative actually used on this project: Vertex AI managed
+#     supervised fine-tuning of Gemini. Google runs the training on its own
+#     fleet — no GPU quota needed on this project. See
+#     docs/VERTEX_FINETUNING.md for the full write-up.
+python backend/scripts/prepare_finetune_dataset.py --output grc_finetune.jsonl
+python backend/training/scripts/vertex_finetune.py --dataset grc_finetune.jsonl
+#    -> prints a tuned model resource name; set it as the Model override in
+#       Settings -> AI Gateway (ai_gateway.py needs zero code changes).
 ```
 
 ## Datasets & sources

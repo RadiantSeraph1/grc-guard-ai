@@ -1,5 +1,5 @@
 """
-Remote Attestation Module — Software-simulated TPM2_QUOTE.
+Remote Attestation Module — TPM2_QUOTE-equivalent workload attestation.
 
 Verifies that the active LLM provider meets internal security policy
 before any compliance data is sent to it.
@@ -8,16 +8,63 @@ Paper reference: Chapter 3 — "policy-compliant API uses the zero-trust
 architecture... specified remote attestation protocols using TPM2_QUOTE
 evidence structures."
 
-This implementation is a software simulation of TPM2_QUOTE. In a
-production GCP Shielded VM deployment, replace tpm2_quote() with
-an actual call to the TPM2 library (e.g., tpm2-tools or python-tpm2).
+Real leg (when running on GCP, e.g. this app's GKE deployment): the
+workload's identity is attested via a Google-signed OIDC ID token pulled
+from the metadata server (instance/service-accounts/default/identity) and
+verified against Google's public keys (google.oauth2.id_token.verify_token).
+This is genuine cryptographic proof the code is running on the expected
+GCE/GKE workload under the expected service account, backed by Google's
+own infrastructure root of trust — not a literal TPM2_QUOTE PCR quote
+(that needs privileged /dev/tpm0 access this container doesn't have), but
+real signed evidence rather than a simulation.
+
+Fallback (no GCP metadata server reachable, e.g. local dev): a software
+HMAC-based simulation of TPM2_QUOTE, clearly reported as such in
+`quote_method` on every attestation report.
+
+Either way, the provider's declared characteristics (data retention,
+region, encryption) are self-declared metadata checked against policy in
+_check_policy() below — no attestation mechanism, hardware or software,
+can independently prove a third-party vendor's internal data handling.
 """
 import hashlib
 import hmac as hmac_lib
 import json
 import os
 import time
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
+
+_METADATA_IDENTITY_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/instance/"
+    "service-accounts/default/identity"
+)
+
+
+def _fetch_and_verify_gcp_identity_token(audience: str) -> Optional[Dict]:
+    """Fetch a Google-signed OIDC ID token for this workload from the GCE/GKE
+    metadata server and verify its signature against Google's public keys.
+
+    Returns the verified claims dict, or None if unavailable (not running on
+    GCP, or verification failed) so the caller can fall back to the software
+    simulation.
+    """
+    try:
+        import requests
+        resp = requests.get(
+            _METADATA_IDENTITY_URL,
+            params={"audience": audience, "format": "full"},
+            headers={"Metadata-Flavor": "Google"},
+            timeout=2,
+        )
+        resp.raise_for_status()
+        token = resp.text
+
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2 import id_token as google_id_token
+        claims = google_id_token.verify_token(token, GoogleAuthRequest(), audience=audience)
+        return claims
+    except Exception:
+        return None
 
 # Internal attestation secret — loaded from env in production
 # This simulates the TPM's endorsement key (EK)
@@ -135,10 +182,27 @@ def attest_provider(provider_type: str, model_name: str, base_url: str = "") -> 
     Per EU AI Act Art. 9 + Basel III operational risk requirements.
     """
     nonce = hashlib.sha256(os.urandom(32)).hexdigest()[:16]
-    pcr, sig = tpm2_quote(provider_type, model_name, nonce, base_url)
-    quote_verified = verify_attestation(provider_type, model_name, nonce, pcr, sig, base_url)
-    policy_check = _check_policy(provider_type)
+    pcr = _pcr_measurement(provider_type, model_name, base_url)
+    audience = f"grc-guard-attestation:{provider_type}:{pcr}"
 
+    gcp_claims = _fetch_and_verify_gcp_identity_token(audience)
+    if gcp_claims:
+        quote_method = "gcp_signed_identity_token"
+        quote_verified = True  # signature + audience + expiry already checked by verify_token
+        sig = gcp_claims.get("email", "") or gcp_claims.get("sub", "")
+        workload_identity = {
+            "instance": gcp_claims.get("google", {}).get("compute_engine", {}).get("instance_name"),
+            "project_id": gcp_claims.get("google", {}).get("compute_engine", {}).get("project_id"),
+            "service_account": gcp_claims.get("email"),
+            "issuer": gcp_claims.get("iss"),
+        }
+    else:
+        quote_method = "software_simulated_hmac"
+        _, sig = tpm2_quote(provider_type, model_name, nonce, base_url)
+        quote_verified = verify_attestation(provider_type, model_name, nonce, pcr, sig, base_url)
+        workload_identity = None
+
+    policy_check = _check_policy(provider_type)
     attested = quote_verified and policy_check["passed"]
 
     return {
@@ -149,6 +213,8 @@ def attest_provider(provider_type: str, model_name: str, base_url: str = "") -> 
         "pcr_digest": pcr,
         "quote_signature": sig,
         "quote_verified": quote_verified,
+        "quote_method": quote_method,
+        "workload_identity": workload_identity,
         "policy_passed": policy_check["passed"],
         "policy_violations": policy_check["violations"],
         "policy_warnings": policy_check["warnings"],
@@ -157,3 +223,20 @@ def attest_provider(provider_type: str, model_name: str, base_url: str = "") -> 
         "timestamp_human": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "eu_ai_act_article": "Art. 9 (Risk Management) + Art. 13 (Transparency)",
     }
+
+
+if __name__ == "__main__":
+    # Off-GCP (metadata server unreachable): must fall back to the software
+    # simulation and still produce a self-consistent, verifiable quote.
+    report = attest_provider("gemini", "gemini-2.5-flash")
+    assert report["quote_method"] == "software_simulated_hmac", report["quote_method"]
+    assert report["quote_verified"] is True
+    assert report["workload_identity"] is None
+    assert report["attested"] is True, report["policy_violations"]
+
+    # Unknown provider: no profile registered -> policy fails regardless of quote.
+    unknown = attest_provider("not-a-real-provider", "x")
+    assert unknown["attested"] is False
+    assert unknown["policy_passed"] is False
+
+    print("attestation.py self-check passed (software-simulation fallback verified).")

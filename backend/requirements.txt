@@ -29,6 +29,7 @@ google-cloud-storage>=2.16.0
 
 # --- HTTP & networking ---
 httpx>=0.27.0
+requests>=2.31.0
 
 # --- Scheduling & observability ---
 APScheduler>=3.10.4

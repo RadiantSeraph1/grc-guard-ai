@@ -47,6 +47,18 @@ def run_light_migrations():
                     conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN effective_date VARCHAR"))
                 if "expiration_date" not in cols:
                     conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN expiration_date VARCHAR"))
+
+        if "ai_provider_configs" in tables:
+            cols = {c["name"] for c in inspector.get_columns("ai_provider_configs")}
+            with engine.begin() as conn:
+                if "tuning_status" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_status VARCHAR"))
+                if "tuning_job_name" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_job_name VARCHAR"))
+                if "tuning_result_model" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_result_model VARCHAR"))
+                if "tuning_error" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_error VARCHAR"))
     except Exception as e:
         print(f"Light migration skipped: {e}")
 

@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import uuid
 import json
 import time
@@ -7,7 +6,6 @@ import re
 import hmac
 import hashlib
 import httpx
-import tempfile
 from pathlib import Path
 from fastapi import FastAPI, Depends, UploadFile, File, Form, Header, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,41 +58,6 @@ app.add_middleware(
 
 # Create database tables immediately on import
 models.Base.metadata.create_all(bind=database.engine)
-
-# SQLite Database for Backward-Compatible Audit Logs. Use the OS temp dir by
-# default: tempfile.gettempdir() resolves to /tmp on Linux (writable even under
-# the container's runAsNonRoot — /app is not) and to the right per-user temp
-# path on Windows (fixing local dev, where a hardcoded "/tmp" doesn't exist).
-# Override with AUDIT_DB_PATH for a persistent location.
-AUDIT_DB = os.environ.get("AUDIT_DB_PATH") or os.path.join(tempfile.gettempdir(), "grc_audit_logs.db")
-
-def _audit_connect():
-    """Open the audit-log SQLite DB with WAL + a busy timeout (C4)."""
-    conn = sqlite3.connect(AUDIT_DB, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=30000;")
-    return conn
-
-def init_audit_db():
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id TEXT PRIMARY KEY,
-            timestamp INTEGER,
-            scanned_text TEXT,
-            decision TEXT,
-            category TEXT,
-            explanation TEXT,
-            is_encrypted INTEGER,
-            byok_key_hash TEXT,
-            org_id TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_audit_db()
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".json", ".docx"}
@@ -1352,32 +1315,31 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
     confidence = compute_scan_confidence(attributions, matched_regs)
 
     # 5. Save Audit Log (Encrypting sensitive fields if BYOK is provided)
-    log_id = str(uuid.uuid4())
     timestamp = int(time.time())
-    
+
     scanned_text_stored = request.text
     explanation_stored = json.dumps(justification)
     is_encrypted = 0
     byok_hash = ""
-    
+
     if request.byok_key:
         scanned_text_stored = security.encrypt_log(request.text, request.byok_key)
         explanation_stored = security.encrypt_log(json.dumps(justification), request.byok_key)
         is_encrypted = 1
         import hashlib
         byok_hash = hashlib.sha256(request.byok_key.encode('utf-8')).hexdigest()
-        
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (log_id, timestamp, scanned_text_stored, decision, category, explanation_stored, is_encrypted, byok_hash, org_id)
+
+    log_entry = models.AuditLog(
+        org_id=org_id, timestamp=str(timestamp), scanned_text=scanned_text_stored,
+        decision=decision, category=category, explanation=explanation_stored,
+        is_encrypted=bool(is_encrypted), byok_key_hash=byok_hash,
     )
-    conn.commit()
-    conn.close()
-    
+    db.add(log_entry)
+    db.commit()
+    db.refresh(log_entry)
+
     return {
-        "id": log_id,
+        "id": log_entry.id,
         "timestamp": timestamp,
         "decision": decision,
         "category": category,
@@ -1406,27 +1368,23 @@ def compute_scan_confidence(attributions: list, matched_regs: list) -> float:
     return round(max(0.5, min(0.99, score)), 2)
 
 @app.get("/api/logs")
-def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
+def get_logs(byok_key: Optional[str] = Query(None), db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
     """Retrieve audit logs. If a valid BYOK key is provided, encrypted fields are decrypted."""
     org_id = current_user.org_id
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, timestamp, scanned_text, decision, category, explanation, is_encrypted, byok_key_hash FROM audit_logs WHERE org_id = ? ORDER BY timestamp DESC", (org_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    
+    rows = db.query(models.AuditLog).filter_by(org_id=org_id).order_by(models.AuditLog.timestamp.desc()).all()
+
     logs = []
     import hashlib
     provided_hash = hashlib.sha256(byok_key.encode('utf-8')).hexdigest() if byok_key else ""
-    
-    for row_id, timestamp, scanned_text, decision, category, explanation, is_encrypted, byok_hash in rows:
-        decrypted_text = scanned_text
-        decrypted_explanation = explanation
-        
-        if is_encrypted:
-            if byok_key and provided_hash == byok_hash:
-                decrypted_text = security.decrypt_log(scanned_text, byok_key)
-                decrypted_exp_raw = security.decrypt_log(explanation, byok_key)
+
+    for row in rows:
+        decrypted_text = row.scanned_text
+        decrypted_explanation = row.explanation
+
+        if row.is_encrypted:
+            if byok_key and provided_hash == row.byok_key_hash:
+                decrypted_text = security.decrypt_log(row.scanned_text, byok_key)
+                decrypted_exp_raw = security.decrypt_log(row.explanation, byok_key)
                 try:
                     decrypted_explanation = json.loads(decrypted_exp_raw)
                 except Exception:
@@ -1442,20 +1400,20 @@ def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = 
                 }
         else:
             try:
-                decrypted_explanation = json.loads(explanation)
+                decrypted_explanation = json.loads(row.explanation)
             except Exception:
                 pass
-                
+
         logs.append({
-            "id": row_id,
-            "timestamp": timestamp,
+            "id": row.id,
+            "timestamp": int(row.timestamp),
             "scanned_text": decrypted_text,
-            "decision": decision,
-            "category": category,
+            "decision": row.decision,
+            "category": row.category,
             "justification": decrypted_explanation,
-            "is_encrypted": bool(is_encrypted)
+            "is_encrypted": bool(row.is_encrypted)
         })
-        
+
     return logs
 
 BENCHMARK_CASES = [
@@ -1856,7 +1814,7 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
             "name": "Policy-conformant API and BYOK architecture",
             "status": "Partially implemented",
             "coverage": 68,
-            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, Vertex AI via Workload Identity (no API keys), attestation-gated outbound AI calls (software TPM simulation, not hardware)."
+            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, Vertex AI via Workload Identity (no API keys), attestation-gated outbound AI calls (Google-signed workload identity token on GCP, software TPM simulation as local-dev fallback)."
         },
         {
             "name": "Real system integration evidence",
@@ -1919,6 +1877,10 @@ def get_ai_providers(db: Session = Depends(database.get_db), current_user: model
             # provider needs no key (Vertex AI's Application Default Credentials).
             "has_key": ai_gateway._provider_usable(c.id, decrypted),
             "key_source": "env" if (env_key and not c.api_key) else ("db" if c.api_key else None),
+            "tuning_status": c.tuning_status,
+            "tuning_job_name": c.tuning_job_name,
+            "tuning_result_model": c.tuning_result_model,
+            "tuning_error": c.tuning_error,
         })
     return result
 
@@ -1962,6 +1924,72 @@ def activate_ai_provider(id: str, db: Session = Depends(database.get_db), curren
         p.is_active = (p.id == id)
     db.commit()
     return {"status": "success", "active_provider": id}
+
+
+def run_vertex_finetune_task(id: str, org_id: str):
+    """Background job: build the seed dataset, submit a Vertex AI managed
+    supervised fine-tuning job, and poll it to completion. See
+    docs/VERTEX_FINETUNING.md - runs on Google's fleet, no GPU needed here.
+    """
+    db = database.SessionLocal()
+    try:
+        config = db.query(models.AIProviderConfig).filter_by(id=id, org_id=org_id).first()
+        if not config:
+            return
+        try:
+            import vertex_tune_lib as lib
+            rows = lib.build_seed_dataset()
+            converted = lib.to_gemini_format(rows)
+            gcs_uri = lib.upload_jsonl_to_gcs(converted, f"{org_id}_{int(time.time())}.jsonl")
+            job = lib.submit_tuning_job(gcs_uri, display_name=f"grc-auditor-{org_id}")
+            config.tuning_job_name = job.name
+            config.tuning_status = str(job.state)
+            db.commit()
+
+            while str(job.state) not in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
+                time.sleep(30)
+                job = lib.get_tuning_job(job.name)
+                config.tuning_status = str(job.state)
+                db.commit()
+
+            if str(job.state) == "JOB_STATE_SUCCEEDED":
+                config.tuning_result_model = job.tuned_model.endpoint
+            else:
+                config.tuning_error = str(getattr(job, "error", "") or f"Job ended in state {job.state}")
+            db.commit()
+        except Exception as e:
+            print(f"Vertex fine-tuning job failed for {id}/{org_id}: {e}")
+            config.tuning_status = "FAILED"
+            config.tuning_error = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/api/settings/ai-providers/{id}/finetune")
+def start_ai_provider_finetune(id: str, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    """Kick off Vertex AI managed fine-tuning for this provider (gemini only).
+
+    Runs on Google's managed fleet, not a self-provisioned GPU - unaffected by
+    the GPU quota denial that blocks train_lora.py. See docs/VERTEX_FINETUNING.md.
+    """
+    if id not in ai_gateway.VERTEX_AI_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Fine-tuning is only available for the Vertex AI (gemini) provider.")
+    config = db.query(models.AIProviderConfig).filter_by(id=id, org_id=current_user.org_id).first()
+    if not config:
+        config = models.AIProviderConfig(id=id, org_id=current_user.org_id, is_active=False)
+        db.add(config)
+    if config.tuning_status in ("QUEUED", "JOB_STATE_QUEUED", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"):
+        raise HTTPException(status_code=409, detail="A fine-tuning job is already in progress for this provider.")
+
+    config.tuning_status = "QUEUED"
+    config.tuning_job_name = None
+    config.tuning_result_model = None
+    config.tuning_error = None
+    db.commit()
+
+    background_tasks.add_task(run_vertex_finetune_task, id, current_user.org_id)
+    return {"status": "queued"}
 
 # 2. Dashboard Overview Stats & Trends
 @app.get("/api/dashboard/stats")
@@ -3004,7 +3032,8 @@ def export_report(
 def get_attestation_status(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
     """Returns current LLM provider attestation report for regulatory audit.
     Per EU AI Act Art. 9 (Risk Management) + Art. 13 (Transparency).
-    Simulates TPM2_QUOTE attestation of the active provider."""
+    Real Google-signed workload identity attestation on GCP; software
+    TPM2_QUOTE simulation as local-dev fallback. See attestation.py."""
     import attestation as att_module
     org_id = current_user.org_id
     active_config = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
@@ -3022,3 +3051,78 @@ def get_attestation_status(db: Session = Depends(database.get_db), current_user:
         base_url=active_config.base_url or ""
     )
     return report
+
+# ---------------------------------------------------------------------------
+# Mechanic queue (Inspector-Mechanic architecture, Phase 4)
+#
+# The Mechanic agent (ai_agents.py) proposes control/risk status changes but
+# never applies them. An Admin must approve or reject each proposal here;
+# approval is the only path that actually writes Control.status/Risk.status.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/mechanic/queue")
+def get_remediation_queue(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    actions = db.query(models.RemediationAction).filter_by(org_id=current_user.org_id).order_by(models.RemediationAction.proposed_at.desc()).all()
+    return [
+        {
+            "id": a.id,
+            "target_type": a.target_type,
+            "target_id": a.target_id,
+            "proposed_status": a.proposed_status,
+            "rationale": a.rationale,
+            "status": a.status,
+            "proposed_at": a.proposed_at,
+            "decided_by": a.decided_by,
+            "decided_at": a.decided_at,
+        }
+        for a in actions
+    ]
+
+
+@app.post("/api/mechanic/{id}/approve")
+def approve_remediation(id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    action = db.query(models.RemediationAction).filter_by(id=id, org_id=current_user.org_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Remediation action not found.")
+    if action.status != "PROPOSED":
+        raise HTTPException(status_code=409, detail=f"Action already {action.status.lower()}, cannot approve again.")
+
+    target_model = models.Control if action.target_type == "control" else models.Risk
+    target = db.query(target_model).filter_by(id=action.target_id, org_id=current_user.org_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Target {action.target_type} no longer exists.")
+
+    old_status = target.status
+    target.status = action.proposed_status
+    if action.target_type == "control":
+        db.add(models.ControlStatusEvent(
+            org_id=current_user.org_id,
+            control_id=target.id,
+            control_code=target.control_code,
+            old_status=old_status,
+            new_status=action.proposed_status,
+            source="mechanic_agent",
+            is_drift=(old_status == "Passing" and action.proposed_status in ("Failing", "Warning")),
+            detected_at=int(time.time()),
+        ))
+
+    action.status = "APPLIED"
+    action.decided_by = current_user.id
+    action.decided_at = int(time.time())
+    db.commit()
+    return {"status": "applied", "target_type": action.target_type, "target_id": action.target_id, "new_status": action.proposed_status}
+
+
+@app.post("/api/mechanic/{id}/reject")
+def reject_remediation(id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    action = db.query(models.RemediationAction).filter_by(id=id, org_id=current_user.org_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Remediation action not found.")
+    if action.status != "PROPOSED":
+        raise HTTPException(status_code=409, detail=f"Action already {action.status.lower()}, cannot reject again.")
+
+    action.status = "REJECTED"
+    action.decided_by = current_user.id
+    action.decided_at = int(time.time())
+    db.commit()
+    return {"status": "rejected"}

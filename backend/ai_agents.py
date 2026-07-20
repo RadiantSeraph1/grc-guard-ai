@@ -1,10 +1,11 @@
 import logging
+import time
 from sqlalchemy.orm import Session
 from agno.agent import Agent
 from agno.team import Team
 
 from database import SessionLocal
-from models import Control, Framework, Risk
+from models import Control, Framework, Risk, RemediationAction
 import rag
 from ai_gateway import get_brain_model
 from pydantic import BaseModel, Field
@@ -52,6 +53,29 @@ def get_framework_controls(framework_name: str, org_id: str) -> str:
         for c in controls:
             res.append(f"- [{c.status}] {c.control_code}: {c.description}")
         return "\n".join(res)
+    finally:
+        db.close()
+
+
+def propose_remediation(target_type: str, target_id: str, proposed_status: str, rationale: str, org_id: str) -> str:
+    """Propose a status change for a control or risk. Does NOT apply it - creates
+    a PROPOSED RemediationAction that an Admin must approve before anything changes."""
+    if target_type not in ("control", "risk"):
+        return f"Invalid target_type '{target_type}'; must be 'control' or 'risk'."
+    db = SessionLocal()
+    try:
+        model = Control if target_type == "control" else Risk
+        if not db.query(model).filter_by(id=target_id, org_id=org_id).first():
+            return f"No {target_type} with id '{target_id}' found for this organization."
+        action = RemediationAction(
+            org_id=org_id, target_type=target_type, target_id=target_id,
+            proposed_status=proposed_status, rationale=rationale,
+            status="PROPOSED", proposed_at=int(time.time()),
+        )
+        db.add(action)
+        db.commit()
+        db.refresh(action)
+        return f"Remediation proposed (id={action.id}) — awaiting Admin approval in the Mechanic queue. Not applied yet."
     finally:
         db.close()
 
@@ -112,6 +136,11 @@ def create_brain_agent(org_id: str) -> Team:
         """Retrieve all active risks for the organization."""
         return get_active_risks(org_id)
 
+    def tool_propose_remediation(target_type: str, target_id: str, proposed_status: str, rationale: str) -> str:
+        """Propose a status change for a control or risk (target_type: 'control' or 'risk').
+        Creates a pending proposal for human approval - never applies the change directly."""
+        return propose_remediation(target_type, target_id, proposed_status, rationale, org_id)
+
     # Vertex AI's Gemini quota is dynamically shared across all Google Cloud
     # customers - a 429 RESOURCE_EXHAUSTED is momentary contention, not a
     # fixed cap. Retry with backoff on every agent, since a single 429
@@ -166,11 +195,28 @@ def create_brain_agent(org_id: str) -> Team:
         **retry_kwargs,
     )
 
+    mechanic = Agent(
+        name="Mechanic",
+        model=model,
+        description="Proposes remediation actions for controls/risks. Cannot apply them - only creates a proposal awaiting human Admin approval.",
+        instructions=(
+            "When an Inspector agent (Compliance Auditor or Risk Assessor) identifies a specific control or risk "
+            "that should change status given the evidence discussed (e.g. a control should move to Passing, or a "
+            "risk should be marked Mitigated), call propose_remediation with the target_type ('control' or 'risk'), "
+            "the exact target id, the proposed_status, and a clear rationale citing the evidence. "
+            "You cannot change status directly - your proposal requires human Admin approval before it takes "
+            "effect. Never claim a change has been applied; always say it has been proposed and is pending review."
+        ),
+        tools=[tool_propose_remediation],
+        markdown=False,
+        **retry_kwargs,
+    )
+
     # The GRC Brain (Orchestrator)
     brain = Team(
         name="GRC Brain",
         model=model,
-        members=[auditor, risk_assessor, researcher, jurisdiction_reconciler],
+        members=[auditor, risk_assessor, researcher, jurisdiction_reconciler, mechanic],
         description="Master orchestration agent for GRC Auditor.",
         instructions=(
             "You are the central AI Brain for GRC Auditor. You answer user queries about THIS organization's compliance "
@@ -183,6 +229,9 @@ def create_brain_agent(org_id: str) -> Team:
             "reference this organization's own posture (e.g. 'what is a CET1 ratio' with no compliance question attached). "
             "If the query involves multiple regulatory frameworks or jurisdictions, delegate to the Jurisdiction Reconciler "
             "to identify conflicts. Include any CONFLICT: findings in the jurisdictional_conflicts field. "
+            "If the user asks you to fix, remediate, or update a specific control or risk's status, delegate to the "
+            "Mechanic to propose the change - never state a status has changed unless the Mechanic confirms a "
+            "proposal was created. Proposals require human Admin approval and are never auto-applied. "
             "You MUST synthesize your findings into the strict JSON format defined by your response model to provide "
             "Auditor-ready Explainable AI (XAI) feature attributions. Do NOT output raw markdown."
         ),

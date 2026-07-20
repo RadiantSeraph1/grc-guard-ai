@@ -61,3 +61,6 @@ Thumbs.db
 k8s/secrets.yaml
 k8s/fineract/secret.yaml
 k8s/wazuh/secret.yaml
+
+# Generated fine-tuning datasets (regenerate via prepare_finetune_dataset.py)
+grc_finetune*.jsonl

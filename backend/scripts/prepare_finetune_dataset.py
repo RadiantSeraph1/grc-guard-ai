@@ -279,7 +279,7 @@ def prepare_dataset(output_path: str = "grc_finetune.jsonl") -> None:
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"✅ Dataset written to: {output_path}")
+    print(f"Dataset written to: {output_path}")
     print(f"   Total examples: {len(all_examples)}")
     print(f"   Frameworks covered: {set(e.get('framework', '') for e in all_examples)}")
     print(f"   Perspectives: {set(e.get('perspective', '') for e in all_examples)}")

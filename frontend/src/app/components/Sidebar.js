@@ -9,7 +9,7 @@ import {
   LayoutDashboard, ShieldCheck, FileText, AlertTriangle,
   Users, ShieldAlert, Library, Fingerprint,
   Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight, ChevronDown,
-  Activity, Radio, Link2, LogOut, Layers, Bell, FileBarChart, Brain
+  Activity, Radio, Link2, LogOut, Layers, Bell, FileBarChart, Brain, Wrench
 } from "lucide-react";
 import { API_BASE_URL } from "../lib/api";
 
@@ -72,6 +72,7 @@ export default function Sidebar() {
     { category: "AI & COMPLIANCE", items: [
       { name: "AI Scanner & RAG", href: "/scanner", icon: ShieldAlert },
       { name: "GRC AI Brain", href: "/brain", icon: Brain },
+      { name: "Mechanic Queue", href: "/mechanic", icon: Wrench },
       { name: "Integrations Center", href: "/integrations", icon: Link2 }
     ]},
     { category: "ANALYSIS", items: [
