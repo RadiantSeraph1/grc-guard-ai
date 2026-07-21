@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  Cloud, Key, Landmark, X, ShieldAlert, Server, Laptop, Plug, Upload,
+  Cloud, Key, Landmark, X, ShieldAlert, Server, Laptop, Plug, Upload, CheckCircle2, XCircle,
 } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import {
@@ -179,6 +179,24 @@ export default function IntegrationsPage() {
 
                 <p className="text-sm text-zinc-400 leading-relaxed min-h-[40px]">{descFor(item.id)}</p>
 
+                {Array.isArray(item.last_audit_checks) && item.last_audit_checks.length > 0 && (
+                  <div className="space-y-1.5 pt-3 border-t border-zinc-800/60">
+                    {item.last_audit_checks.map((chk, idx) => (
+                      <div key={idx} className="flex items-start gap-2 text-xs">
+                        {chk.passed ? (
+                          <CheckCircle2 size={13} className="text-emerald-400 shrink-0 mt-0.5" />
+                        ) : (
+                          <XCircle size={13} className="text-rose-400 shrink-0 mt-0.5" />
+                        )}
+                        <div className="min-w-0">
+                          <span className={chk.passed ? "text-zinc-300" : "text-zinc-200 font-medium"}>{chk.label}</span>
+                          {chk.detail && <span className="text-zinc-500"> — {chk.detail}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between pt-4 border-t border-zinc-800/60 text-xs">
                   <span className="text-zinc-500">
                     {item.last_sync
@@ -216,9 +234,27 @@ export default function IntegrationsPage() {
               <X size={14} />
             </button>
           </div>
-          <p className="text-xs text-zinc-400 leading-relaxed mt-2 max-h-64 overflow-y-auto custom-scrollbar">
-            {syncLogs.result.message}
-          </p>
+          {Array.isArray(syncLogs.result.checks) && syncLogs.result.checks.length > 0 ? (
+            <div className="space-y-1.5 mt-2 max-h-64 overflow-y-auto custom-scrollbar">
+              {syncLogs.result.checks.map((chk, idx) => (
+                <div key={idx} className="flex items-start gap-2 text-xs">
+                  {chk.passed ? (
+                    <CheckCircle2 size={13} className="text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle size={13} className="text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="min-w-0">
+                    <span className={chk.passed ? "text-zinc-300" : "text-zinc-200 font-medium"}>{chk.label}</span>
+                    {chk.detail && <span className="text-zinc-500"> — {chk.detail}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-400 leading-relaxed mt-2 max-h-64 overflow-y-auto custom-scrollbar">
+              {syncLogs.result.message}
+            </p>
+          )}
         </div>
       )}
 

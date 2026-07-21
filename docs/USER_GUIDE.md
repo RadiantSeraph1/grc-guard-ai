@@ -127,7 +127,7 @@ entry and get an instant compliance verdict (COMPLIANT / VIOLATION) with:
   removal **flips the decision** are flagged "Flipped decision."
 - **Recent Scans** — every scan is saved to your organization's audit log
   (Postgres-backed, persists across deploys) and can be reloaded here.
-- **Feedback** (👍/👎) — rate a decision; feedback is stored for later model
+- **Feedback** (up/down vote) — rate a decision; feedback is stored for later model
   improvement (see §14).
 
 ---
@@ -140,7 +140,7 @@ EDR?"). Behind the scenes, the Brain delegates to specialist agents:
 
 | Agent | Job |
 |---|---|
-| Compliance Auditor | Looks up frameworks/controls and their live status. |
+| Compliance Auditor | Looks up frameworks/controls and their live status, and can answer questions about a connector's live posture-check results (e.g. "is GCP passing its checks?"). |
 | Risk Assessor | Reviews open risks and exposures. |
 | Policy Researcher | Searches your uploaded policy documents (RAG). |
 | Jurisdiction Reconciler | Flags conflicts between overlapping regulations (e.g. EU CRD/CRR vs. US Basel III) and states which one takes precedence and why. |
@@ -159,6 +159,12 @@ Every answer includes:
 
 Conversations are saved per-user and can be revisited from the sidebar of
 this page.
+
+**Live status always wins.** If the Compliance Auditor's live control status
+disagrees with something a Policy Researcher finds in an uploaded document,
+the live status is authoritative — a document can be stale or never
+reconciled against real control state. The disagreement is still reported
+to you as a finding, but it never silently overrides the system of record.
 
 **What the Brain cannot do:** SHAP or attention-based explanations that
 require access to the model's internal weights. The active model
@@ -204,6 +210,14 @@ control status:
 Enter read-only credentials, then **Sync** — the connector runs its
 posture checks against the real system and flips the mapped controls'
 status accordingly, recording the finding as evidence.
+
+Each connector's individual checks (e.g. "2SV enrollment: FAIL — 6 of 7
+active users not enrolled") are shown as a persistent, readable checklist on
+its card — not just a one-line pass/fail summary — so you can see exactly
+which sub-check failed and why, both right after a sync and any time you
+come back to this page. You can also ask the **GRC AI Brain** (§9) directly,
+e.g. *"is our GCP connector passing its checks?"* — the Compliance Auditor
+agent reads the same live check data.
 
 ---
 

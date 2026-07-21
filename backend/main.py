@@ -2235,6 +2235,7 @@ def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
         reason = result.get("reason", "Sync completed.")
 
         integration.last_audit_summary = reason
+        integration.last_audit_checks = result.get("details", {}).get("checks")
         integration.status = "Connected" if compliant else "Error"
 
         # Any asset linked to this integration inherits the audit outcome.
@@ -2275,7 +2276,7 @@ def get_integration_logs(id: str, db: Session = Depends(database.get_db), curren
                  "message": "No sync has been run yet for this connector."}]
     level = "ERROR" if integration.status == "Error" else "SUCCESS"
     return [{"timestamp": integration.last_sync or int(time.time()), "level": level,
-             "message": integration.last_audit_summary}]
+             "message": integration.last_audit_summary, "checks": integration.last_audit_checks}]
 
 # 4. Controls Monitoring
 @app.get("/api/controls")

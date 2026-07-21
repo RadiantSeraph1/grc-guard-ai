@@ -32,9 +32,11 @@ def run_light_migrations():
 
         if "integrations" in tables:
             cols = {c["name"] for c in inspector.get_columns("integrations")}
-            if "last_audit_summary" not in cols:
-                with engine.begin() as conn:
+            with engine.begin() as conn:
+                if "last_audit_summary" not in cols:
                     conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_summary VARCHAR"))
+                if "last_audit_checks" not in cols:
+                    conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_checks JSON"))
 
         if "vector_chunks" in tables:
             cols = {c["name"] for c in inspector.get_columns("vector_chunks")}

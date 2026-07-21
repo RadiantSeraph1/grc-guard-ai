@@ -109,6 +109,7 @@ class Integration(Base):
     credentials = Column(String, nullable=True) # Encrypted
     last_sync = Column(Integer, nullable=True)
     last_audit_summary = Column(String, nullable=True) # Human-readable result of the last live sync
+    last_audit_checks = Column(JSON, nullable=True) # Structured [{label, passed, detail}, ...] behind last_audit_summary
 
     organization = relationship("Organization", back_populates="integrations")
 

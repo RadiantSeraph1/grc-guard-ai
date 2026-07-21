@@ -5,7 +5,7 @@ from agno.agent import Agent
 from agno.team import Team
 
 from database import SessionLocal
-from models import Control, Framework, Risk, RemediationAction
+from models import Control, Framework, Risk, RemediationAction, Integration
 import rag
 from ai_gateway import get_brain_model
 from pydantic import BaseModel, Field
@@ -82,6 +82,32 @@ def propose_remediation(target_type: str, target_id: str, proposed_status: str, 
         db.close()
 
 
+def get_integration_status(org_id: str) -> str:
+    """Retrieve live connector status and their last posture-check results."""
+    db = SessionLocal()
+    try:
+        integrations = db.query(Integration).filter_by(org_id=org_id).all()
+        if not integrations:
+            return "No integrations configured for this organization."
+        res = []
+        for i in integrations:
+            line = f"- {i.name} ({i.category}): {i.status}"
+            if i.last_audit_checks:
+                checks = "; ".join(
+                    f"{c.get('label')}: {'PASS' if c.get('passed') else 'FAIL'}" + (f" ({c.get('detail')})" if c.get("detail") else "")
+                    for c in i.last_audit_checks
+                )
+                line += f" — {checks}"
+            elif i.last_audit_summary:
+                line += f" — {i.last_audit_summary}"
+            else:
+                line += " — never synced"
+            res.append(line)
+        return "\n".join(res)
+    finally:
+        db.close()
+
+
 def get_active_risks(org_id: str) -> str:
     """Retrieve all Open risks for the organization."""
     db = SessionLocal()
@@ -139,6 +165,10 @@ def create_brain_agent(org_id: str) -> Team:
         """Retrieve all active risks for the organization."""
         return get_active_risks(org_id)
 
+    def tool_get_integrations() -> str:
+        """Retrieve live connector status and their last posture-check results (e.g. GCP, Wazuh, Fineract)."""
+        return get_integration_status(org_id)
+
     def tool_propose_remediation(target_type: str, target_id: str, proposed_status: str, rationale: str) -> str:
         """Propose a status change for a control or risk (target_type: 'control' or 'risk').
         Creates a pending proposal for human approval - never applies the change directly."""
@@ -154,9 +184,14 @@ def create_brain_agent(org_id: str) -> Team:
     auditor = Agent(
         name="Compliance Auditor",
         model=model,
-        description="Expert compliance auditor focusing on frameworks and controls.",
-        instructions="Look up frameworks and map them to controls. Evaluate compliance posture.",
-        tools=[tool_get_controls],
+        description="Expert compliance auditor focusing on frameworks, controls, and live connector status.",
+        instructions=(
+            "Look up frameworks and map them to controls. Evaluate compliance posture. When asked about a "
+            "connector/integration (e.g. GCP, Wazuh, Google Workspace, Fineract) or its live posture checks, "
+            "use tool_get_integrations - report each check's actual PASS/FAIL result and detail, don't summarize "
+            "it away to just 'connected' or 'error'."
+        ),
+        tools=[tool_get_controls, tool_get_integrations],
         markdown=False,
         **retry_kwargs,
     )
