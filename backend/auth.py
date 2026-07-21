@@ -204,12 +204,15 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
     org_id = DEFAULT_COMPANY_ID
     org_name = DEFAULT_COMPANY_NAME
     
-    # Metadata contains user role and department. Default to the least-privileged
-    # role ("Viewer") so a user whose Clerk metadata omits a role cannot silently
-    # gain write/admin access (fail-closed). Elevated roles must be granted
-    # explicitly via Clerk public_metadata or the super-admin allowlist below.
+    # Metadata contains user role and department. `role` is left None here (not
+    # defaulted) so we can tell "token omitted the claim" apart from "token
+    # explicitly asserts a role" below - the two need different handling:
+    # a BRAND NEW user fails closed to "Viewer", but an EXISTING user's stored
+    # role must NOT be overwritten just because one particular token lacks the
+    # claim (Clerk omits it in some token templates), or a real Admin could be
+    # silently demoted on their next request.
     metadata = payload.get("public_metadata", {})
-    role = metadata.get("role", "Admin")
+    role = metadata.get("role")
     department = metadata.get("department", "General")
     if (
         clerk_id in SUPER_ADMIN_USER_IDS
@@ -257,13 +260,14 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
         db.commit()
 
     if not user:
-        # Register new user from Clerk payload in database dynamically (SCIM-like provisioning)
+        # Register new user from Clerk payload in database dynamically (SCIM-like provisioning).
+        # Fail closed to the least-privileged role if the token didn't assert one.
         user = User(
             id=clerk_id,
             org_id=org_id,
             email=email,
             name=name,
-            role=role,
+            role=role or "Viewer",
             department=department,
             training_completed=False,
             background_check_passed=False,
@@ -283,7 +287,7 @@ def get_current_user(payload: dict = Depends(verify_clerk_token), db: Session = 
         if name and user.name != name:
             user.name = name
             updated = True
-        if user.role != role:
+        if role is not None and user.role != role:
             user.role = role
             updated = True
         if not user.department or user.department != department:
