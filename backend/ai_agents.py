@@ -51,7 +51,9 @@ def get_framework_controls(framework_name: str, org_id: str) -> str:
 
         res = [f"Framework: {framework.name}"]
         for c in controls:
-            res.append(f"- [{c.status}] {c.control_code}: {c.description}")
+            # id is included so the Mechanic can target this exact control -
+            # control_code alone isn't a valid propose_remediation target.
+            res.append(f"- [{c.status}] {c.control_code} (id={c.id}): {c.description}")
         return "\n".join(res)
     finally:
         db.close()
@@ -89,7 +91,8 @@ def get_active_risks(org_id: str) -> str:
             return "No open risks found."
         res = []
         for r in risks:
-            res.append(f"- {r.title} (Category: {r.category}, Inherent: {r.inherent_score}, Residual: {r.residual_score})")
+            # id is included so the Mechanic can target this exact risk.
+            res.append(f"- {r.title} (id={r.id}, Category: {r.category}, Inherent: {r.inherent_score}, Residual: {r.residual_score})")
         return "\n".join(res)
     finally:
         db.close()
@@ -227,6 +230,10 @@ def create_brain_agent(org_id: str) -> Team:
             "even if you already know the general regulatory concept. Delegate to the Risk Assessor for any question "
             "touching organizational risk exposure. Only skip delegation for purely definitional questions that do not "
             "reference this organization's own posture (e.g. 'what is a CET1 ratio' with no compliance question attached). "
+            "If the Compliance Auditor's live control status disagrees with the Policy Researcher's document-derived "
+            "reading, the Compliance Auditor's control status ALWAYS wins - it reads the actual system of record, "
+            "while a document may be stale, superseded, or never reconciled against real control state. Report the "
+            "disagreement as a finding, but never let a document override a live control status. "
             "If the query involves multiple regulatory frameworks or jurisdictions, delegate to the Jurisdiction Reconciler "
             "to identify conflicts. Include any CONFLICT: findings in the jurisdictional_conflicts field. "
             "If the user asks you to fix, remediate, or update a specific control or risk's status, delegate to the "
