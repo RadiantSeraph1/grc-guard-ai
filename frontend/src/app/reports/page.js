@@ -6,8 +6,7 @@ import {
   FileBarChart, Download, FileText, RotateCw, Sparkles, AlertTriangle,
   CheckCircle2, AlertOctagon
 } from "lucide-react";
-
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "../lib/api";
 
 const statusBadge = (s) => ({
   Passing: "text-emerald-400 bg-emerald-950/30 border-emerald-900/50",

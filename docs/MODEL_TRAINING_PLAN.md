@@ -122,17 +122,33 @@ the decision step in `/api/scan`.
 
 - **Recommendation:** keep **Claude via `ai_gateway` + RAG**. Only LoRA-tune a
   small open model if you need fully offline or lower per-call cost.
-- **If tuning:** LoRA/QLoRA on a 7–8B instruct base (`Qwen2.5-7B-Instruct`,
-  `Llama-3.1-8B-Instruct`).
+- **If tuning:** two paths were built; use whichever the environment supports.
+  - **GPU path (`train_lora.py`):** LoRA/QLoRA on a 7–8B open-weight instruct
+    base (`Qwen2.5-7B-Instruct`, `Llama-3.1-8B-Instruct`, default
+    `microsoft/Phi-3-mini-4k-instruct`). Needs ~**24 GB** VRAM (A10/A100/3090/4090)
+    or 16 GB for the Phi-3-mini default. **Blocked on this project** — the
+    `GPUS_ALL_REGIONS` quota increase request was denied, so this path cannot
+    run here (Colab or a different GCP project with GPU quota would work).
+  - **GPU-free path (`vertex_finetune.py`, used on this project):** Vertex AI
+    **managed supervised fine-tuning** of Gemini. Google trains on its own
+    fleet — no GPU is provisioned by the caller, so it is unaffected by the
+    GPU quota denial. Full write-up: [`docs/VERTEX_FINETUNING.md`](VERTEX_FINETUNING.md).
   - **Instruction pairs from:** CUAD (clause → explanation), NIST control
     "discussion" (control → remediation), and **your own scan logs**
-    (`decision + evidence → justification`) once volume accrues.
+    (`decision + evidence → justification`) once volume accrues. The seed set
+    actually used is `backend/scripts/prepare_finetune_dataset.py`
+    (perspective-labeled Basel III/CBEST/GDPR/AML/SOC 2 examples).
   - **Format:** `{system, input: text+retrieved_evidence+decision, output: {summary, reasoning, remediation}}`.
   - **Later:** DPO from real auditor 👍/👎 feedback.
 - **Eval:** rubric LLM-as-judge + human spot-check; **faithfulness** to retrieved
   evidence (no invented controls — matches the existing agent instructions).
-- **Integration:** the `inhouse` provider slot in `ai_gateway.py` is already live — serve the tuned model behind any OpenAI-compatible endpoint (vLLM) and set its base_url. The app needs zero code changes.
-- **Compute:** 7–8B QLoRA needs ~**24 GB** VRAM (A10/A100/3090/4090).
+- **Integration:**
+  - Open-weight LoRA adapter: the `inhouse` provider slot in `ai_gateway.py` is
+    already live — serve it behind any OpenAI-compatible endpoint (vLLM) and
+    set its base_url. No app code changes needed.
+  - Vertex-tuned Gemini: set the tuned model's resource name as the **Model
+    override** on the active `gemini` provider (Settings → AI Gateway). Read
+    by `ai_gateway.py:_build_model` already — no app code changes needed.
 
 ---
 

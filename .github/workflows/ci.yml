@@ -1,32 +1,77 @@
-name: CI
+name: GRC Guard AI – CI
 
 on:
-  push:
   pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # ── Job 1: Backend Tests ──
   backend-tests:
+    name: Backend Tests
     runs-on: ubuntu-latest
     defaults:
-      run: { working-directory: backend }
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12", cache: pip }
-      - run: pip install -r requirements.txt
-      - run: pytest -q
-        env:
-          CLERK_MOCK_AUTH: "true"
-          BYOK_SECRET_KEY: ci-test-vault-key
-          SUPER_ADMIN_ACCESS_KEY: local-super-admin-key
+      run:
+        working-directory: backend
 
-  frontend-lint:
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt || true
+
+      - name: Run tests
+        run: |
+          pytest --tb=short -q
+        env:
+          DATABASE_URL: "sqlite:///./test.db"
+          CLERK_MOCK_AUTH: "true"
+          BYOK_SECRET_KEY: "test-secret-key-for-ci"
+          DEFAULT_COMPANY_ID: "test_company"
+          DEFAULT_COMPANY_NAME: "Test Company"
+
+  # ── Job 2: Frontend Lint & Build ──
+  frontend-lint-build:
+    name: Frontend Lint & Build
     runs-on: ubuntu-latest
     defaults:
-      run: { working-directory: frontend }
+      run:
+        working-directory: frontend
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm, cache-dependency-path: frontend/package-lock.json }
-      - run: npm ci --legacy-peer-deps
-      - run: npx eslint src
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_placeholder"
+          NEXT_PUBLIC_CLERK_SIGN_IN_URL: "/sign-in"
+          NEXT_PUBLIC_CLERK_SIGN_UP_URL: "/sign-up"

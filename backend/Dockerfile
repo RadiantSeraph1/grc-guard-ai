@@ -1,22 +1,41 @@
-# GRC Auditor — Backend (FastAPI + agno) service image.
+# GRC Guard AI — Backend (FastAPI + agno) production image.
+# Multi-stage build for smaller final image.
+
+# --- Stage 1: Builder ---
+FROM python:3.12-slim AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# --- Stage 2: Runtime ---
 FROM python:3.12-slim
 
-# System deps occasionally needed by cryptography / psycopg2 wheels.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends libpq5 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
 
 WORKDIR /app
 
-# Install Python deps first for better layer caching.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy installed Python packages from builder
+COPY --from=builder /install /usr/local
 
-# App code.
-COPY . .
+# Copy application code
+COPY --chown=appuser:appuser . .
+
+# Create temp directory for uploads
+RUN mkdir -p /app/temp_uploads && chown appuser:appuser /app/temp_uploads
+
+USER appuser
 
 EXPOSE 8001
 
-# The frontend proxy expects the API on :8001. Override CMD to run agent_os:app
-# (the agno AgentOS) on :7777 if you also want the agent UI backend.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8001/api/health || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--timeout-graceful-shutdown", "30"]

@@ -130,11 +130,11 @@ export default function ControlsPage() {
           <Select value={frameworkFilter} onChange={(e) => setFrameworkFilter(e.target.value)} className="sm:w-44">
             <option value="ALL">All frameworks</option>
             <option value="basel-iii">Basel III</option>
-            <option value="gdpr">GDPR</option>
-            <option value="cbest">CBEST</option>
             <option value="soc-2">SOC 2</option>
             <option value="iso-27001">ISO 27001</option>
+            <option value="nist-csf">NIST CSF</option>
             <option value="pci-dss">PCI DSS</option>
+            <option value="gdpr">GDPR</option>
           </Select>
         </div>
       </Card>

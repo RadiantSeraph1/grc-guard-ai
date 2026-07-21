@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grc-backend
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: backend
+  annotations:
+    cloud.google.com/backend-config: '{"default": "grc-backend-config"}'
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+      protocol: TCP

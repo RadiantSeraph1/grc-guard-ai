@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grc-guard-config
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: config
+data:
+  DATABASE_URL: "postgresql://user:password@localhost:5432/grcguard"
+  ALLOWED_ORIGINS: "*"
+  DEFAULT_COMPANY_ID: "radiant_innovatech"
+  DEFAULT_COMPANY_NAME: "Radiant Innovatech"
+  CLERK_MOCK_AUTH: "false"
+  CLERK_JWKS_URL: "https://correct-mallard-98.clerk.accounts.dev/.well-known/jwks.json"
+  GCS_BUCKET: "grc-guard-uploads-claude-code-501412"
+  VERTEX_AI_PROJECT: "claude-code-501412"
+  VERTEX_AI_LOCATION: "us-central1"
+  PORT: "8001"
+  SCHEDULER_ENABLED: "true"
+  MAX_UPLOAD_BYTES: "15728640"

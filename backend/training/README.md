@@ -46,6 +46,28 @@ python backend/training/scripts/build_hf_clause_datasets.py --datasets ledgar un
 #    (point --iac-dir at a corpus of Terraform/CFN/K8s, e.g. cloned public repos)
 python backend/training/scripts/gen_compliance_labels.py --iac-dir /path/to/iac
 #    -> data/processed/compliance_checkov.jsonl
+
+# 5. Banking domain corpus for Phase 1 LoRA fine-tuning (perspective-labeled
+#    CBEST + Basel III/GDPR/SOC 2 + NIST 800-53 + your own ASOKORE export).
+python backend/training/scripts/build_banking_corpus.py
+#    -> data/processed/banking_corpus.jsonl  (gitignored — contains real IPs/org name if ASOKORE included)
+python backend/training/scripts/build_banking_corpus.py --no-asokore   # portable/CI-safe variant
+
+# 6a. QLoRA fine-tune on the banking corpus (needs a CUDA GPU — Colab T4/A100 or
+#     a GCP V100; will not run on CPU or a local Windows dev machine). Blocked
+#     on this project: GPUS_ALL_REGIONS quota request was denied.
+python backend/training/scripts/train_lora.py --epochs 3
+#    -> artifacts/banking-lora/ (adapter) + eval_before_after.json
+python backend/training/scripts/train_lora.py --eval-only --adapter artifacts/banking-lora  # score only
+
+# 6b. GPU-free alternative actually used on this project: Vertex AI managed
+#     supervised fine-tuning of Gemini. Google runs the training on its own
+#     fleet — no GPU quota needed on this project. See
+#     docs/VERTEX_FINETUNING.md for the full write-up.
+python backend/scripts/prepare_finetune_dataset.py --output grc_finetune.jsonl
+python backend/training/scripts/vertex_finetune.py --dataset grc_finetune.jsonl
+#    -> prints a tuned model resource name; set it as the Model override in
+#       Settings -> AI Gateway (ai_gateway.py needs zero code changes).
 ```
 
 ## Datasets & sources
@@ -136,12 +158,16 @@ an ignored dataset anyway: `git add -f data/processed/<file>.jsonl`.
 ## Notes
 
 - **Weak labels are noisy.** Checkov coverage is partial; always keep a
-  hand-labeled gold set under `data/eval/` for real metrics.
+  hand-labeled gold set under `data/eval/` for real metrics. The ASOKORE
+  `asokore_asset_weak` rows in `banking_corpus.jsonl` are one-sided (FAIL-only)
+  weak labels derived from the source filename — never treat them as gold.
 - **Licensing / PII.** Respect each source's license; redact secrets from any
   scraped IaC before training. Never train on tenant data without consent —
-  preserve the app's `org_id` isolation.
-- **No training code yet** — this module stops at materialized datasets, per the
-  agreed plan-first scope. Training scripts (`train_control_mapper.py`, etc.)
-  come next.
+  preserve the app's `org_id` isolation. The ASOKORE source is the project
+  owner's own authorized network-scan export, not tenant data, but it does
+  contain real IPs/org name — that's why `banking_corpus.jsonl` stays gitignored.
+- **Training scripts:** `train_control_mapper.py` (Task 1, bi-encoder, runnable
+  now) and `train_lora.py` (Phase 1 QLoRA domain fine-tune on
+  `banking_corpus.jsonl` — needs a CUDA GPU, not runnable on CPU/Windows dev).
 ```
 ```

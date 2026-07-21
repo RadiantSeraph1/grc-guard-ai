@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grc-guard-ingress
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: ingress
+  annotations:
+    kubernetes.io/ingress.class: gce
+    # No managed-certificates annotation: no custom domain is currently DNS-mapped
+    # to this ingress's IP, so a ManagedCertificate would sit stuck in
+    # "Provisioning" forever. Serves over the GCE ingress's plain HTTP endpoint.
+    # Re-add `networking.gke.io/managed-certificates: <name>` once a real
+    # domain's A record points at this ingress's external IP.
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /api/*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grc-backend
+                port:
+                  number: 8001
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grc-frontend
+                port:
+                  number: 3000

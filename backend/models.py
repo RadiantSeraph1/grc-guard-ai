@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Table, LargeBinary
+from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, Table, LargeBinary, Text, JSON
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -25,8 +25,10 @@ class Organization(Base):
     comments = relationship("AuditComment", back_populates="organization", cascade="all, delete-orphan")
     vector_chunks = relationship("VectorChunk", back_populates="organization", cascade="all, delete-orphan")
     control_status_events = relationship("ControlStatusEvent", back_populates="organization", cascade="all, delete-orphan")
-    remediation_tasks = relationship("RemediationTask", back_populates="organization", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="organization", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="organization", cascade="all, delete-orphan")
+    feedback_entries = relationship("Feedback", back_populates="organization", cascade="all, delete-orphan")
+    remediation_actions = relationship("RemediationAction", back_populates="organization", cascade="all, delete-orphan")
 
 class Department(Base):
     __tablename__ = "departments"
@@ -71,14 +73,30 @@ class User(Base):
 class AIProviderConfig(Base):
     __tablename__ = "ai_provider_configs"
 
-    id = Column(String, primary_key=True, index=True) # e.g. 'openai', 'claude', 'gemini', 'groq', etc.
+    id = Column(String, primary_key=True, index=True) # provider id, e.g. 'gemini'
     org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True, index=True)
     api_key = Column(String, nullable=True) # Authenticated encrypted value
     base_url = Column(String, nullable=True)
     model_override = Column(String, nullable=True)
     is_active = Column(Boolean, default=False)
 
+    # Vertex AI managed fine-tuning job tracking (see docs/VERTEX_FINETUNING.md).
+    tuning_status = Column(String, nullable=True)       # QUEUED | RUNNING | SUCCEEDED | FAILED
+    tuning_job_name = Column(String, nullable=True)     # Vertex TuningJob resource name
+    tuning_result_model = Column(String, nullable=True) # tuned model resource name, once SUCCEEDED
+    tuning_error = Column(String, nullable=True)
+
     organization = relationship("Organization", back_populates="ai_configs")
+
+class BrainConversation(Base):
+    __tablename__ = "brain_conversations"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    title = Column(String, nullable=True)
+    messages = Column(JSON, nullable=False, default=list)  # [{role, content}, ...] - mirrors the frontend's history array 1:1
+    created_at = Column(Integer)
+    updated_at = Column(Integer, index=True)
 
 class Integration(Base):
     __tablename__ = "integrations"
@@ -91,6 +109,7 @@ class Integration(Base):
     credentials = Column(String, nullable=True) # Encrypted
     last_sync = Column(Integer, nullable=True)
     last_audit_summary = Column(String, nullable=True) # Human-readable result of the last live sync
+    last_audit_checks = Column(JSON, nullable=True) # Structured [{label, passed, detail}, ...] behind last_audit_summary
 
     organization = relationship("Organization", back_populates="integrations")
 
@@ -240,6 +259,10 @@ class VectorChunk(Base):
     page_number = Column(Integer)
     content = Column(String)
     embedding = Column(LargeBinary, nullable=True) # Stores the text-embedding-004 binary array of float32s
+    effective_date = Column(String, nullable=True) # ISO format date
+    expiration_date = Column(String, nullable=True) # ISO format date
+    regulatory_version = Column(String, nullable=True) # e.g. "Basel III 2017", "Basel III 2019 revision"
+    pii_redaction_count = Column(Integer, nullable=True, default=0) # # of anonymize_pii() redactions applied
 
     organization = relationship("Organization", back_populates="vector_chunks")
 
@@ -287,26 +310,6 @@ class ControlStatusEvent(Base):
     organization = relationship("Organization", back_populates="control_status_events")
 
 
-class RemediationTask(Base):
-    """An actionable task to fix a failing/at-risk control."""
-    __tablename__ = "remediation_tasks"
-
-    id = Column(String, primary_key=True, index=True)
-    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
-    title = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    control_id = Column(String, ForeignKey("controls.id", ondelete="SET NULL"), nullable=True)
-    control_code = Column(String, nullable=True)
-    owner_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    priority = Column(String, default="Medium")  # Critical, High, Medium, Low
-    status = Column(String, default="Open")  # Open, In Progress, Blocked, Done
-    due_date = Column(Integer, nullable=True)
-    created_at = Column(Integer)
-    updated_at = Column(Integer, nullable=True)
-
-    organization = relationship("Organization", back_populates="remediation_tasks")
-
-
 class Notification(Base):
     """In-app alert surfaced in the notification feed."""
     __tablename__ = "notifications"
@@ -323,3 +326,75 @@ class Notification(Base):
     created_at = Column(Integer, index=True)
 
     organization = relationship("Organization", back_populates="notifications")
+
+
+class AuditLog(Base):
+    """Compliance scan audit log — migrated from raw sqlite3 grc_audit_logs.db."""
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    timestamp = Column(String)
+    scanned_text = Column(String)
+    decision = Column(String)
+    category = Column(String, nullable=True)
+    explanation = Column(String, nullable=True)
+    is_encrypted = Column(Boolean, default=False)
+    byok_key_hash = Column(String, nullable=True)
+
+    organization = relationship("Organization", back_populates="audit_logs")
+
+
+control_framework_association = Table(
+    "control_framework_link",
+    Base.metadata,
+    Column("control_id", String, ForeignKey("controls.id", ondelete="CASCADE"), primary_key=True),
+    Column("framework_id", String, ForeignKey("frameworks.id", ondelete="CASCADE"), primary_key=True)
+)
+
+
+class Feedback(Base):
+    """Auditor thumbs-up/down on a Scanner or Brain output.
+
+    Stores full context (input, decision, explanation) alongside the rating so
+    a later export can build (prompt, chosen, rejected) DPO preference pairs
+    once a matching up- and down-rated response exist for a similar input.
+    Per paper Ch.3 "reinforcement learning based on human feedback with domain
+    experts" - this is the data-collection step; no training happens here.
+    """
+    __tablename__ = "feedback"
+
+    id = Column(String, primary_key=True, index=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id = Column(String, nullable=True)  # rater, best-effort (Clerk user id)
+    source = Column(String, nullable=False)  # "scan" | "brain"
+    input_text = Column(String, nullable=False)
+    output_decision = Column(String, nullable=True)
+    output_explanation = Column(String, nullable=True)  # full justification/reasoning text
+    rating = Column(String, nullable=False)  # "up" | "down"
+    created_at = Column(Integer)
+
+    organization = relationship("Organization", back_populates="feedback_entries")
+
+
+class RemediationAction(Base):
+    """A Mechanic-agent-proposed write to compliance state (Inspector-Mechanic
+    architecture, Phase 4). The Mechanic never writes Control/Risk status
+    directly - it proposes a change here, and an Admin approves or rejects it.
+    Applying an approved action also writes a ControlStatusEvent(source=
+    'mechanic_agent') so it shows up in the existing drift/history trail.
+    """
+    __tablename__ = "remediation_actions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), index=True, nullable=False)
+    target_type = Column(String, nullable=False)  # "control" | "risk"
+    target_id = Column(String, nullable=False)
+    proposed_status = Column(String, nullable=False)
+    rationale = Column(String, nullable=False)
+    status = Column(String, default="PROPOSED")  # PROPOSED, APPROVED, REJECTED, APPLIED
+    proposed_at = Column(Integer)
+    decided_by = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    decided_at = Column(Integer, nullable=True)
+
+    organization = relationship("Organization", back_populates="remediation_actions")

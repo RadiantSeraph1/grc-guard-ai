@@ -20,13 +20,12 @@ import {
   XCircle
 } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "@/app/lib/api";
 const ROLES = ["SuperAdmin", "Admin", "Editor", "Auditor", "Viewer", "Employee"];
 const STATUSES = ["Active", "Onboarding", "Offboarding", "Suspended"];
 const INTEGRATION_STATUSES = ["Connected", "Configured", "Disconnected", "Error"];
 const PROVIDER_DETAILS = {
-  inhouse: { name: "In-House GRC Model", desc: "Our own trained model on an OpenAI-compatible endpoint.", url: "", model: "grc-auditor-v1" },
-  groq: { name: "Groq (interim)", desc: "Low-latency OpenAI-compatible inference for testing.", url: "https://api.groq.com/openai/v1/chat/completions", model: "llama-3.3-70b-versatile" }
+  gemini: { name: "Vertex AI (Gemini)", desc: "Google Gemini via Vertex AI. Authenticates via Application Default Credentials — no API key needed.", url: "", model: "gemini-2.5-flash" },
 };
 const PROVIDER_ORDER = Object.keys(PROVIDER_DETAILS);
 
@@ -398,7 +397,7 @@ export default function SuperAdminPage() {
           {([...(control?.ai_providers || [])].sort((a, b) => PROVIDER_ORDER.indexOf(a.id) - PROVIDER_ORDER.indexOf(b.id))).map((provider) => {
             const draft = providerDrafts[provider.id] || {};
             const details = PROVIDER_DETAILS[provider.id] || { name: provider.id, desc: "Provider.", url: "", model: "custom-model" };
-            const keyless = provider.id === "inhouse";   // self-hosted endpoint may need no key
+            const keyless = provider.id === "gemini";   // Vertex AI uses Application Default Credentials
             return (
               <div key={provider.id} className="bg-[#121215] border border-zinc-800 rounded-lg p-5 space-y-4">
                 <div className="flex items-start justify-between">

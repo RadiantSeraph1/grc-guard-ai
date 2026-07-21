@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import uuid
 import json
 import time
@@ -23,7 +22,7 @@ import ai_gateway
 import security
 import rag
 import xai
-import ai_agents
+import lime_engine
 import s3_storage
 import framework_library
 from seed import seed_db
@@ -36,10 +35,11 @@ SUPER_ADMIN_ACCESS_KEY = os.environ.get("SUPER_ADMIN_ACCESS_KEY", "local-super-a
 SUPER_ADMIN_SESSION_SECRET = os.environ.get("SUPER_ADMIN_SESSION_SECRET", ai_gateway.get_vault_key() or "local-super-admin-session-secret")
 CLERK_SECRET_KEY = os.environ.get("CLERK_SECRET_KEY")
 CLERK_BACKEND_API_URL = os.environ.get("CLERK_BACKEND_API_URL", "https://api.clerk.com/v1")
-# Supported AI providers: Groq (interim, for testing) and "inhouse" (our own
-# trained GRC model). When neither is usable, AI features return an explicit
-# "no model available" notice — there is no fabricated fallback engine.
-AI_PROVIDER_IDS = ["groq", "inhouse"]
+# Supported AI provider: Vertex AI (Gemini), authenticated via the GKE service
+# account's Workload Identity (Application Default Credentials) - no API key
+# needed. When it's not usable, AI features return an explicit "no model
+# available" notice — there is no fabricated fallback engine.
+AI_PROVIDER_IDS = ["gemini"]
 
 app = FastAPI(title="GRC Guard AI Enterprise Compliance Engine API")
 
@@ -58,37 +58,6 @@ app.add_middleware(
 
 # Create database tables immediately on import
 models.Base.metadata.create_all(bind=database.engine)
-
-# SQLite Database for Backward-Compatible Audit Logs
-AUDIT_DB = "grc_audit_logs.db"
-
-def _audit_connect():
-    """Open the audit-log SQLite DB with WAL + a busy timeout (C4)."""
-    conn = sqlite3.connect(AUDIT_DB, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=30000;")
-    return conn
-
-def init_audit_db():
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id TEXT PRIMARY KEY,
-            timestamp INTEGER,
-            scanned_text TEXT,
-            decision TEXT,
-            category TEXT,
-            explanation TEXT,
-            is_encrypted INTEGER,
-            byok_key_hash TEXT,
-            org_id TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_audit_db()
 
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(15 * 1024 * 1024)))
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".txt", ".md", ".csv", ".json", ".docx"}
@@ -418,7 +387,6 @@ def health_check(db: Session = Depends(database.get_db)):
     return {
         "status": "healthy",
         "ai_api_configured": bool(provider_env_key or provider_db_key),
-        "groq_api_configured": bool(os.environ.get("GROQ_API_KEY", "").strip()),
         "gemini_api_configured": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "mode": active_id,
         "clerk_configured": bool(os.environ.get("CLERK_JWKS_URL")),
@@ -575,19 +543,14 @@ def ensure_ai_provider_configs(db: Session, org_id: str) -> list[models.AIProvid
     db.commit()
     configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
     active = next((config for config in configs if config.is_active), None)
-    groq = next((config for config in configs if config.id == "groq"), None)
-    if (
-        os.environ.get("GROQ_API_KEY", "").strip()
-        and groq
-        and not active
-        and not groq.is_active
-    ):
+    gemini = next((config for config in configs if config.id == "gemini"), None)
+    # Vertex AI needs no key (Application Default Credentials via Workload
+    # Identity), so auto-activate it as soon as it exists and nothing else is active.
+    if gemini and not active and not gemini.is_active:
         for config in configs:
-            config.is_active = (config.id == "groq")
-        if not groq.base_url:
-            groq.base_url = "https://api.groq.com/openai/v1/chat/completions"
-        if not groq.model_override:
-            groq.model_override = "llama-3.3-70b-versatile"
+            config.is_active = (config.id == "gemini")
+        if not gemini.model_override:
+            gemini.model_override = ai_gateway.PROVIDER_DEFAULT_MODEL["gemini"]
         db.commit()
         configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
     return configs
@@ -800,7 +763,7 @@ def super_admin_update_ai_provider(id: str, request: SuperAdminAIProviderUpdateR
     if request.api_key is not None and request.api_key.strip():
         provider.api_key = security.encrypt_log(request.api_key, get_required_vault_key())
     if request.activate:
-        if id not in ["inhouse"] and not provider.api_key:
+        if not ai_gateway._provider_usable(id, ai_gateway.get_decrypted_key(provider)):
             raise HTTPException(status_code=400, detail=f"Configure an API key before activating {id}.")
         for item in db.query(models.AIProviderConfig).filter_by(org_id=org_id).all():
             item.is_active = (item.id == id)
@@ -823,19 +786,34 @@ def super_admin_reset_data(db: Session = Depends(database.get_db), current_user 
     return {"status": "success", "message": "All operational data was cleared. The organization is now empty."}
 
 @app.post("/api/ingest")
-async def ingest_document(file: UploadFile = File(...), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    """Upload a regulatory reference/evidence document and index it into the RAG database."""
+async def ingest_document(
+    file: UploadFile = File(...),
+    effective_date: Optional[str] = Form(None),
+    expiration_date: Optional[str] = Form(None),
+    regulatory_version: Optional[str] = Form(None),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"])),
+):
+    """Upload a regulatory reference/evidence document and index it into the RAG database.
+
+    effective_date/expiration_date drive rag.py's temporal filtering (already
+    live). regulatory_version tags which revision of a regulation this document
+    represents (e.g. "Basel III 2017", "Basel III 2019 revision") — Ch.3 Layer 1
+    "temporal harmonization with regulatory version tagging"."""
     content = await file.read()
     safe_filename = validate_upload(file.filename, content, {".pdf", ".txt", ".md", ".csv", ".json"})
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
     temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{safe_filename}")
-    
+
     try:
         with open(temp_path, "wb") as buffer:
             buffer.write(content)
-            
-        result = rag.ingest_document(temp_path, safe_filename, org_id=current_user.org_id, source_type="reference")
+
+        result = rag.ingest_document(
+            temp_path, safe_filename, org_id=current_user.org_id, source_type="reference",
+            effective_date=effective_date, expiration_date=expiration_date,
+            regulatory_version=regulatory_version,
+        )
         return {"message": result, "corpus": rag.corpus_stats(current_user.org_id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to ingest document: {str(e)}")
@@ -936,7 +914,7 @@ def build_compliance_analysis(db: Session, org_id: str, question: Optional[str] 
         Top failing controls: {json.dumps(failing_controls[:5])}
         Top open risks: {[{"title": risk.title, "residual_score": risk.residual_score, "category": risk.category} for risk in open_risks[:5]]}
         RAG citations: {json.dumps(citations[:3])}
-        Return a concise executive analysis with remediation priorities.
+        Return a concise executive analysis.
         """
         ai_summary = ai_gateway.generate_content(prompt, "You are a senior banking GRC analysis agent. Be precise and evidence-grounded.", org_id=org_id)
 
@@ -988,10 +966,123 @@ def run_compliance_analysis(request: AnalysisRequest, db: Session = Depends(data
         include_ai=request.include_ai
     )
 
+class BrainChatRequest(BaseModel):
+    query: str
+    conversation_id: Optional[str] = None
+
+BRAIN_ROLE_DEP = auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])
+
+@app.get("/api/brain/conversations")
+def list_brain_conversations(db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convos = (
+        db.query(models.BrainConversation)
+        .filter_by(org_id=current_user.org_id)
+        .order_by(models.BrainConversation.updated_at.desc())
+        .all()
+    )
+    return [{"id": c.id, "title": c.title or "New conversation", "updated_at": c.updated_at} for c in convos]
+
+@app.get("/api/brain/conversations/{id}")
+def get_brain_conversation(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convo = db.query(models.BrainConversation).filter_by(id=id, org_id=current_user.org_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"id": convo.id, "title": convo.title, "messages": convo.messages or []}
+
+@app.delete("/api/brain/conversations/{id}")
+def delete_brain_conversation(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    convo = db.query(models.BrainConversation).filter_by(id=id, org_id=current_user.org_id).first()
+    if convo:
+        db.delete(convo)
+        db.commit()
+    return {"status": "success"}
+
+@app.post("/api/brain/chat")
+def run_brain_chat(request: BrainChatRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(BRAIN_ROLE_DEP)):
+    import ai_agents
+    convo = None
+    if request.conversation_id:
+        convo = db.query(models.BrainConversation).filter_by(id=request.conversation_id, org_id=current_user.org_id).first()
+    if not convo:
+        convo = models.BrainConversation(
+            id=str(uuid.uuid4()), org_id=current_user.org_id, messages=[],
+            title=request.query[:60], created_at=int(time.time()),
+        )
+        db.add(convo)
+
+    try:
+        brain = ai_agents.create_brain_agent(current_user.org_id)
+        # We run the ReAct loop which leverages the tools and the sub-agents
+        response = brain.run(request.query)
+        # response.content will be an instance of ComplianceExplanation (XAI Schema)
+        payload = response.content.model_dump() if hasattr(response.content, 'model_dump') else {"response": response.content}
+    except ValueError as e:
+        # e.g., missing AI provider
+        payload = {"error": str(e)}
+    except Exception as e:
+        print(f"Error in Brain Chat: {e}")
+        payload = {"error": "The GRC Brain encountered an error while processing your request."}
+
+    convo.messages = [*(convo.messages or []), {"role": "user", "content": request.query}, {"role": "brain", "content": payload}]
+    convo.updated_at = int(time.time())
+    db.commit()
+
+    return {**payload, "conversation_id": convo.id}
+
 class ScanRequest(BaseModel):
     text: str
     perspective: str = "Standard" # Attacker, User, Standard
     byok_key: Optional[str] = None
+
+class FeedbackRequest(BaseModel):
+    source: str  # "scan" | "brain"
+    input_text: str
+    output_decision: Optional[str] = None
+    output_explanation: Optional[str] = None
+    rating: str  # "up" | "down"
+
+@app.post("/api/feedback")
+def submit_feedback(request: FeedbackRequest, db: Session = Depends(database.get_db),
+                    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Record an auditor's thumbs-up/down on a Scanner or Brain output.
+
+    Data-collection step for Ch.3 "reinforcement learning based on human
+    feedback with domain experts" — stores full context so a later export
+    (backend/training/scripts/export_dpo_pairs.py) can build (prompt, chosen,
+    rejected) DPO preference pairs once matched up/down ratings exist for a
+    similar input. No training happens here."""
+    if request.source not in ("scan", "brain"):
+        raise HTTPException(status_code=400, detail="source must be 'scan' or 'brain'.")
+    if request.rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'.")
+    entry = models.Feedback(
+        id=str(uuid.uuid4()),
+        org_id=current_user.org_id,
+        user_id=current_user.id,
+        source=request.source,
+        input_text=request.input_text,
+        output_decision=request.output_decision,
+        output_explanation=request.output_explanation,
+        rating=request.rating,
+        created_at=int(time.time()),
+    )
+    db.add(entry)
+    db.commit()
+    return {"status": "recorded", "id": entry.id}
+
+@app.post("/api/xai/lime-explain")
+def lime_explain(request: ScanRequest, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
+    """Opt-in REAL perturbation-based LIME against the active AI provider.
+
+    Not run automatically on every /api/scan — this issues up to 16 extra model
+    calls per explanation, so it's a deliberate auditor action ("Explain with
+    LIME"), not part of the normal scan path. See lime_engine.py."""
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    try:
+        return lime_engine.real_lime_attribution(request.text, org_id=current_user.org_id, perspective=request.perspective)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e) or "No usable AI provider configured for LIME explanation.")
 
 def evaluate_scan_case(text: str, perspective: str, org_id: str, db: Session) -> dict:
     matched_regs = rag.search_documents(text, org_id=org_id, limit=3)
@@ -1099,7 +1190,7 @@ def build_scan_reasoning_trace(
         {
             "stage": "Auditor synthesis",
             "status": "completed",
-            "detail": "Composed the visible justification, remediation guidance, and audit-ready output."
+            "detail": "Composed the visible justification and audit-ready output."
         }
     ]
 
@@ -1224,32 +1315,31 @@ def scan_text(request: ScanRequest, db: Session = Depends(database.get_db), curr
     confidence = compute_scan_confidence(attributions, matched_regs)
 
     # 5. Save Audit Log (Encrypting sensitive fields if BYOK is provided)
-    log_id = str(uuid.uuid4())
     timestamp = int(time.time())
-    
+
     scanned_text_stored = request.text
     explanation_stored = json.dumps(justification)
     is_encrypted = 0
     byok_hash = ""
-    
+
     if request.byok_key:
         scanned_text_stored = security.encrypt_log(request.text, request.byok_key)
         explanation_stored = security.encrypt_log(json.dumps(justification), request.byok_key)
         is_encrypted = 1
         import hashlib
         byok_hash = hashlib.sha256(request.byok_key.encode('utf-8')).hexdigest()
-        
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (log_id, timestamp, scanned_text_stored, decision, category, explanation_stored, is_encrypted, byok_hash, org_id)
+
+    log_entry = models.AuditLog(
+        org_id=org_id, timestamp=str(timestamp), scanned_text=scanned_text_stored,
+        decision=decision, category=category, explanation=explanation_stored,
+        is_encrypted=bool(is_encrypted), byok_key_hash=byok_hash,
     )
-    conn.commit()
-    conn.close()
-    
+    db.add(log_entry)
+    db.commit()
+    db.refresh(log_entry)
+
     return {
-        "id": log_id,
+        "id": log_entry.id,
         "timestamp": timestamp,
         "decision": decision,
         "category": category,
@@ -1278,27 +1368,23 @@ def compute_scan_confidence(attributions: list, matched_regs: list) -> float:
     return round(max(0.5, min(0.99, score)), 2)
 
 @app.get("/api/logs")
-def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
+def get_logs(byok_key: Optional[str] = Query(None), db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor"]))):
     """Retrieve audit logs. If a valid BYOK key is provided, encrypted fields are decrypted."""
     org_id = current_user.org_id
-    conn = _audit_connect()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, timestamp, scanned_text, decision, category, explanation, is_encrypted, byok_key_hash FROM audit_logs WHERE org_id = ? ORDER BY timestamp DESC", (org_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    
+    rows = db.query(models.AuditLog).filter_by(org_id=org_id).order_by(models.AuditLog.timestamp.desc()).all()
+
     logs = []
     import hashlib
     provided_hash = hashlib.sha256(byok_key.encode('utf-8')).hexdigest() if byok_key else ""
-    
-    for row_id, timestamp, scanned_text, decision, category, explanation, is_encrypted, byok_hash in rows:
-        decrypted_text = scanned_text
-        decrypted_explanation = explanation
-        
-        if is_encrypted:
-            if byok_key and provided_hash == byok_hash:
-                decrypted_text = security.decrypt_log(scanned_text, byok_key)
-                decrypted_exp_raw = security.decrypt_log(explanation, byok_key)
+
+    for row in rows:
+        decrypted_text = row.scanned_text
+        decrypted_explanation = row.explanation
+
+        if row.is_encrypted:
+            if byok_key and provided_hash == row.byok_key_hash:
+                decrypted_text = security.decrypt_log(row.scanned_text, byok_key)
+                decrypted_exp_raw = security.decrypt_log(row.explanation, byok_key)
                 try:
                     decrypted_explanation = json.loads(decrypted_exp_raw)
                 except Exception:
@@ -1314,20 +1400,20 @@ def get_logs(byok_key: Optional[str] = Query(None), current_user: models.User = 
                 }
         else:
             try:
-                decrypted_explanation = json.loads(explanation)
+                decrypted_explanation = json.loads(row.explanation)
             except Exception:
                 pass
-                
+
         logs.append({
-            "id": row_id,
-            "timestamp": timestamp,
+            "id": row.id,
+            "timestamp": int(row.timestamp),
             "scanned_text": decrypted_text,
-            "decision": decision,
-            "category": category,
+            "decision": row.decision,
+            "category": row.category,
             "justification": decrypted_explanation,
-            "is_encrypted": bool(is_encrypted)
+            "is_encrypted": bool(row.is_encrypted)
         })
-        
+
     return logs
 
 BENCHMARK_CASES = [
@@ -1464,6 +1550,200 @@ def _evaluate_case_set(cases: list, org_id: str, db: Session) -> tuple:
     return results, metrics
 
 
+@app.post("/api/evaluation/llm-benchmark")
+def run_llm_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor", "Editor"]))):
+    """Run the paper Table 2.1 Basel III benchmark against the active LLM provider.
+    Scores 10 ground-truth Q&A cases and compares against paper baselines."""
+    from benchmark_cases import BASEL_BENCHMARK
+    org_id = current_user.org_id
+    results = []
+    correct = 0
+    for case in BASEL_BENCHMARK:
+        try:
+            prompt = (
+                f"You are a banking regulatory compliance expert. Answer the following question "
+                f"precisely and concisely in 1-2 sentences. Be specific with numbers and percentages.\n\n"
+                f"Question: {case['question']}"
+            )
+            response = ai_gateway.generate_content(
+                prompt,
+                system_message="You are a senior banking GRC compliance expert with deep knowledge of Basel III, CBEST, GDPR, and SOC 2.",
+                org_id=org_id
+            )
+            response_lower = response.lower()
+            hit = any(kw.lower() in response_lower for kw in case["ground_truth_keywords"])
+            if hit:
+                correct += 1
+            results.append({
+                "id": case["id"],
+                "category": case["category"],
+                "question": case["question"],
+                "correct": hit,
+                "expected": case["ground_truth"],
+                "got": response[:300],
+                "perspective": case["perspective"],
+                "error_category": case.get("error_category", "Standard Factual"),
+            })
+        except Exception as e:
+            results.append({
+                "id": case["id"],
+                "category": case["category"],
+                "question": case["question"],
+                "correct": False,
+                "expected": case["ground_truth"],
+                "got": f"Error: {str(e)}",
+                "perspective": case["perspective"],
+                "error_category": case.get("error_category", "Standard Factual"),
+            })
+    accuracy = round(correct / len(BASEL_BENCHMARK) * 100, 1) if BASEL_BENCHMARK else 0
+
+    # Per-Table-2.3 error taxonomy breakdown: accuracy grouped by error_category,
+    # so a blended 70% doesn't hide that Domain Understanding (perspective
+    # confusion) or Cross-Border Reconciliation may be much worse.
+    taxonomy: dict = {}
+    for r in results:
+        bucket = taxonomy.setdefault(r["error_category"], {"total": 0, "correct": 0})
+        bucket["total"] += 1
+        bucket["correct"] += 1 if r["correct"] else 0
+    error_taxonomy = {
+        cat: {
+            "total": stats["total"],
+            "correct": stats["correct"],
+            "accuracy": round(stats["correct"] / stats["total"] * 100, 1) if stats["total"] else 0,
+        }
+        for cat, stats in taxonomy.items()
+    }
+
+    return {
+        "accuracy": accuracy,
+        "error_taxonomy": error_taxonomy,
+        "correct": correct,
+        "total": len(BASEL_BENCHMARK),
+        "results": results,
+        "paper_baselines": {
+            "gpt4_zero_shot": 68,
+            "claude_35_zero_shot": 65,
+            "regulllama_finetuned": 91,
+            "human_expert": 85,
+            "source": "UMaT Paper Table 2.1"
+        },
+        "categories": list(set(r["category"] for r in results)),
+        "summary": f"Active LLM scored {accuracy}% on {len(BASEL_BENCHMARK)} Basel III/CBEST benchmark cases (paper GPT-4 zero-shot baseline: 68%)."
+    }
+
+
+@app.post("/api/evaluation/model-comparison")
+def run_model_comparison(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    """Base-model selection via quantitative benchmarking (Ch.3): runs the Basel
+    III/CBEST benchmark + Table 2.3 error taxonomy against EVERY configured
+    provider with usable credentials for this org (not just the active one),
+    and reports which one wins. Providers without a usable key are reported as
+    unusable, not silently skipped, so it's clear what wasn't compared."""
+    from benchmark_cases import BASEL_BENCHMARK
+    org_id = current_user.org_id
+    configs = db.query(models.AIProviderConfig).filter_by(org_id=org_id).all()
+
+    provider_results = []
+    for config in configs:
+        api_key = ai_gateway.get_decrypted_key(config)
+        if not ai_gateway._provider_usable(config.id, api_key):
+            provider_results.append({"provider": config.id, "usable": False, "reason": "No usable credentials configured."})
+            continue
+
+        correct = 0
+        taxonomy: dict = {}
+        for case in BASEL_BENCHMARK:
+            try:
+                prompt = (
+                    f"You are a banking regulatory compliance expert. Answer the following question "
+                    f"precisely and concisely in 1-2 sentences. Be specific with numbers and percentages.\n\n"
+                    f"Question: {case['question']}"
+                )
+                response = ai_gateway.generate_content_for_config(
+                    prompt, config,
+                    system_instruction="You are a senior banking GRC compliance expert with deep knowledge of Basel III, CBEST, GDPR, and SOC 2.",
+                )
+                hit = any(kw.lower() in response.lower() for kw in case["ground_truth_keywords"])
+            except Exception:
+                hit = False
+            correct += 1 if hit else 0
+            cat = case.get("error_category", "Standard Factual")
+            bucket = taxonomy.setdefault(cat, {"total": 0, "correct": 0})
+            bucket["total"] += 1
+            bucket["correct"] += 1 if hit else 0
+
+        total = len(BASEL_BENCHMARK)
+        provider_results.append({
+            "provider": config.id,
+            "usable": True,
+            "model": config.model_override or ai_gateway.PROVIDER_DEFAULT_MODEL.get(config.id, "unknown"),
+            "accuracy": round(correct / total * 100, 1) if total else 0,
+            "correct": correct,
+            "total": total,
+            "error_taxonomy": {
+                cat: {**s, "accuracy": round(s["correct"] / s["total"] * 100, 1) if s["total"] else 0}
+                for cat, s in taxonomy.items()
+            },
+        })
+
+    usable = [p for p in provider_results if p["usable"]]
+    winner = max(usable, key=lambda p: p["accuracy"]) if usable else None
+    return {
+        "providers": provider_results,
+        "recommended_base_model": winner,
+        "method": (
+            "Per-provider run of the Basel III/CBEST benchmark + Table 2.3 error taxonomy against every "
+            "provider configured for this org with usable credentials. Per paper Ch.3 'base model selection "
+            "via quantitative benchmarking.'"
+        ),
+        "summary": (
+            f"Compared {len(usable)}/{len(provider_results)} configured providers with usable credentials. "
+            + (f"Best: {winner['provider']} ({winner['accuracy']}%)." if winner else "No usable provider to compare.")
+        ),
+    }
+
+
+@app.post("/api/evaluation/adversarial")
+def run_adversarial_eval(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor", "Editor"]))):
+    """Probe the scanner's semantic blind spots with adversarially-crafted inputs
+    (euphemism substitution, obfuscated routing, temporal justification,
+    transitional loophole) per paper Section 2.4.2. Reports the deterministic
+    rule-baseline detection rate — a case is "detected" when the scanner flags it
+    VIOLATION. The keyword baseline is expected to MISS most of these; the gap is
+    the semantic blind spot an LLM/fine-tuned model is meant to close (compare via
+    /api/scan with an active provider)."""
+    from benchmark_cases import ADVERSARIAL_CASES
+    org_id = current_user.org_id
+    results = []
+    detected = 0
+    for case in ADVERSARIAL_CASES:
+        rule_eval = evaluate_scan_case(case["input"], "Auditor", org_id, db)
+        is_detected = rule_eval["decision"] == "VIOLATION"
+        if is_detected:
+            detected += 1
+        results.append({
+            "id": case["id"],
+            "adversarial_technique": case["adversarial_technique"],
+            "description": case["description"],
+            "expected_flag": case["expected_flag"],
+            "rule_detected": is_detected,
+            "rule_category": rule_eval["category"],
+        })
+    total = len(ADVERSARIAL_CASES)
+    rate = round(detected / total * 100, 1) if total else 0
+    return {
+        "total": total,
+        "rule_baseline_detected": detected,
+        "rule_baseline_detection_rate": rate,
+        "results": results,
+        "method": ("Deterministic keyword rule baseline evaluated on adversarially-crafted inputs designed to "
+                   "evade keyword matching. Detection = flagged VIOLATION."),
+        "summary": (f"Rule baseline detected {detected}/{total} adversarial inputs ({rate}%). The misses are "
+                    "semantic blind spots (euphemism / obfuscated routing / temporal justification) that keyword "
+                    "matching cannot catch — the gap an LLM or fine-tuned model is meant to close (paper Sec. 2.4.2)."),
+    }
+
+
 @app.get("/api/evaluation/benchmark")
 def run_benchmark(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
     """Honest benchmark: the deterministic rule baseline is scored on a HELD-OUT
@@ -1528,19 +1808,19 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
             "name": "Explainable output generation",
             "status": "Implemented as local attribution + auditor justification",
             "coverage": 72,
-            "evidence": "Scanner returns top terms, attribution weights, matched regulatory context, reasoning, and remediation."
+            "evidence": "Scanner returns top terms, attribution weights, matched regulatory context, and reasoning."
         },
         {
             "name": "Policy-conformant API and BYOK architecture",
             "status": "Partially implemented",
             "coverage": 68,
-            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, configurable AI providers, but no hardware attestation."
+            "evidence": "BYOK encrypted logs/credentials, same-origin proxy, Vertex AI via Workload Identity (no API keys), attestation-gated outbound AI calls (Google-signed workload identity token on GCP, software TPM simulation as local-dev fallback)."
         },
         {
             "name": "Real system integration evidence",
-            "status": "Partially implemented",
-            "coverage": 64,
-            "evidence": "GitHub, AWS, Okta, and Auth0 credential paths exist. Live evidence depends on valid read-only credentials."
+            "status": "Implemented with live connectors",
+            "coverage": 80,
+            "evidence": "GCP, Google Workspace, Apache Fineract (core banking), and Wazuh (EDR) connectors pull live audit evidence with real read-only credentials."
         },
         {
             "name": "Production readiness",
@@ -1561,7 +1841,7 @@ def implementation_report(db: Session = Depends(database.get_db), current_user: 
         "integrations": [{"id": item.id, "name": item.name, "status": item.status} for item in integrations],
         "objectives": objectives,
         "remaining_gaps": [
-            "The in-house trained GRC model (currently served via the interim Groq provider).",
+            "The in-house trained GRC model (currently served via Vertex AI Gemini as the interim provider).",
             "Formal SHAP/LIME/Captum model-internal explanations (current attribution is IR-relevance based).",
             "Expert-labelled empirical validation and Chapter 4-style result tables.",
             "Production database migrations, observability, and deployment hardening."
@@ -1594,9 +1874,13 @@ def get_ai_providers(db: Session = Depends(database.get_db), current_user: model
             "is_active": c.is_active,
             "api_key": masked_key,
             # Usable if a key exists in the DB or the environment, or the
-            # provider needs no key (local engines).
-            "has_key": bool(decrypted) or c.id in ["inhouse"],
+            # provider needs no key (Vertex AI's Application Default Credentials).
+            "has_key": ai_gateway._provider_usable(c.id, decrypted),
             "key_source": "env" if (env_key and not c.api_key) else ("db" if c.api_key else None),
+            "tuning_status": c.tuning_status,
+            "tuning_job_name": c.tuning_job_name,
+            "tuning_result_model": c.tuning_result_model,
+            "tuning_error": c.tuning_error,
         })
     return result
 
@@ -1629,21 +1913,83 @@ def activate_ai_provider(id: str, db: Session = Depends(database.get_db), curren
         db.commit()
         db.refresh(target)
         
-    if id not in ["inhouse"]:
-        # Accept a key from the DB OR the environment (.env). Previously only the
-        # DB key was checked, so env-configured providers (e.g. GROQ_API_KEY)
-        # could not be activated from the UI.
-        if not ai_gateway.get_decrypted_key(target):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Add it in .env or here first."
-            )
+    if not ai_gateway._provider_usable(id, ai_gateway.get_decrypted_key(target)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot activate {id.upper()} provider: API Key is not configured. Add it in .env or here first."
+        )
             
     providers = db.query(models.AIProviderConfig).filter_by(org_id=current_user.org_id).all()
     for p in providers:
         p.is_active = (p.id == id)
     db.commit()
     return {"status": "success", "active_provider": id}
+
+
+def run_vertex_finetune_task(id: str, org_id: str):
+    """Background job: build the seed dataset, submit a Vertex AI managed
+    supervised fine-tuning job, and poll it to completion. See
+    docs/VERTEX_FINETUNING.md - runs on Google's fleet, no GPU needed here.
+    """
+    db = database.SessionLocal()
+    try:
+        config = db.query(models.AIProviderConfig).filter_by(id=id, org_id=org_id).first()
+        if not config:
+            return
+        try:
+            import vertex_tune_lib as lib
+            rows = lib.build_seed_dataset()
+            converted = lib.to_gemini_format(rows)
+            gcs_uri = lib.upload_jsonl_to_gcs(converted, f"{org_id}_{int(time.time())}.jsonl")
+            job = lib.submit_tuning_job(gcs_uri, display_name=f"grc-auditor-{org_id}")
+            config.tuning_job_name = job.name
+            config.tuning_status = str(job.state)
+            db.commit()
+
+            while str(job.state) not in ("JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"):
+                time.sleep(30)
+                job = lib.get_tuning_job(job.name)
+                config.tuning_status = str(job.state)
+                db.commit()
+
+            if str(job.state) == "JOB_STATE_SUCCEEDED":
+                config.tuning_result_model = job.tuned_model.endpoint
+            else:
+                config.tuning_error = str(getattr(job, "error", "") or f"Job ended in state {job.state}")
+            db.commit()
+        except Exception as e:
+            print(f"Vertex fine-tuning job failed for {id}/{org_id}: {e}")
+            config.tuning_status = "FAILED"
+            config.tuning_error = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.post("/api/settings/ai-providers/{id}/finetune")
+def start_ai_provider_finetune(id: str, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    """Kick off Vertex AI managed fine-tuning for this provider (gemini only).
+
+    Runs on Google's managed fleet, not a self-provisioned GPU - unaffected by
+    the GPU quota denial that blocks train_lora.py. See docs/VERTEX_FINETUNING.md.
+    """
+    if id not in ai_gateway.VERTEX_AI_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Fine-tuning is only available for the Vertex AI (gemini) provider.")
+    config = db.query(models.AIProviderConfig).filter_by(id=id, org_id=current_user.org_id).first()
+    if not config:
+        config = models.AIProviderConfig(id=id, org_id=current_user.org_id, is_active=False)
+        db.add(config)
+    if config.tuning_status in ("QUEUED", "JOB_STATE_QUEUED", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"):
+        raise HTTPException(status_code=409, detail="A fine-tuning job is already in progress for this provider.")
+
+    config.tuning_status = "QUEUED"
+    config.tuning_job_name = None
+    config.tuning_result_model = None
+    config.tuning_error = None
+    db.commit()
+
+    background_tasks.add_task(run_vertex_finetune_task, id, current_user.org_id)
+    return {"status": "queued"}
 
 # 2. Dashboard Overview Stats & Trends
 @app.get("/api/dashboard/stats")
@@ -1858,198 +2204,60 @@ def connect_integration(request: IntegrationConnectRequest, db: Session = Depend
     return {"status": "success", "integration_status": integration.status}
 
 def run_sync_task(integration_id: str, org_id: str, source: str = "sync"):
+    """Run one connector audit and propagate the result.
+
+    Dispatch is a registry lookup (integration_clients.SYNC_HANDLERS); every
+    connector then flows through the same post-processing: integration status +
+    audit summary, linked-asset status, and the connector->control bridge that
+    flips imported framework controls and records drift.
+    """
     import integration_clients
     db = database.SessionLocal()
     try:
         integration = db.query(models.Integration).filter_by(id=integration_id, org_id=org_id).first()
         if not integration:
             return
-            
+
         integration.last_sync = int(time.time())
         vault_key = ai_gateway.get_vault_key()
-        
-        # Get decrypted credentials
         creds_str = ""
         if integration.credentials and vault_key:
             creds_str = security.decrypt_log(integration.credentials, vault_key)
-            
-        compliant = True
-        reason = "Sync completed."
         creds = parse_integration_credentials(creds_str)
 
-        if integration_id == "aws":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                access_key = creds.get("aws_access_key_id") or creds.get("access_key") or (parts[0] if len(parts) > 0 else None)
-                secret_key = creds.get("aws_secret_access_key") or creds.get("secret_key") or (parts[1] if len(parts) > 1 else None)
-                bucket_name = creds.get("bucket_name") or creds.get("bucket") or (parts[2] if len(parts) > 2 else None)
-                
-                client = integration_clients.AWSClient(access_key, secret_key)
-                res = client.audit_s3_encryption(bucket_name or os.environ.get("AWS_AUDIT_BUCKET", "grc-audit-bucket"))
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "AWS audit completed.")
-            else:
-                compliant = False
-                reason = "AWS credentials missing. Provide read-only access key, secret key, and bucket_name."
-                
-            control = db.query(models.Control).filter_by(control_code="GDPR-PII-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Failing"
-                control.last_tested = int(time.time())
-            asset = db.query(models.Asset).filter_by(integration_id="aws", org_id=org_id).first()
-            if asset: 
-                asset.compliance_status = "Passing" if compliant else "Failing"
-            risk = db.query(models.Risk).filter(models.Risk.org_id == org_id, models.Risk.title.contains("Database")).first()
-            if risk: 
-                risk.residual_score = 4 if compliant else 20
-                risk.status = "Mitigated" if compliant else "Open"
-                
-        elif integration_id == "github":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                token = creds.get("token") or creds.get("github_token") or (parts[0] if len(parts) > 0 else None)
-                owner = creds.get("owner") or (parts[1] if len(parts) > 1 else None)
-                repo = creds.get("repo") or (parts[2] if len(parts) > 2 else None)
-                branch = creds.get("branch") or (parts[3] if len(parts) > 3 else "main")
-                
-                client = integration_clients.GitHubClient(token)
-                res = client.audit_branch_protection(owner or os.environ.get("GITHUB_OWNER", ""), repo or os.environ.get("GITHUB_REPO", ""), branch)
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "GitHub audit completed.")
-            else:
-                compliant = False
-                reason = "GitHub credentials missing. Provide token, owner, repo, and branch."
-                
-            control = db.query(models.Control).filter_by(control_code="GIT-BR-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Failing"
-                control.last_tested = int(time.time())
-            asset = db.query(models.Asset).filter_by(integration_id="github", org_id=org_id).first()
-            if asset: 
-                asset.compliance_status = "Passing" if compliant else "Failing"
-            risk = db.query(models.Risk).filter(models.Risk.org_id == org_id, models.Risk.title.contains("Developer")).first()
-            if risk: 
-                risk.residual_score = 3 if compliant else 12
-                risk.status = "Mitigated" if compliant else "Open"
-                
-        elif integration_id == "okta":
-            if creds_str:
-                creds = parse_integration_credentials(creds_str)
-                parts = creds.get("parts", [])
-                org_url = creds.get("org_url") or creds.get("okta_org_url") or (parts[0] if len(parts) > 0 else None)
-                token = creds.get("token") or creds.get("okta_api_token") or (parts[1] if len(parts) > 1 else None)
-                
-                client = integration_clients.OktaClient(org_url, token)
-                res = client.audit_mfa_enrollment()
-                compliant = res.get("compliant", False)
-                reason = res.get("reason", "Okta audit completed.")
-            else:
-                compliant = False
-                reason = "Okta credentials missing. Provide org_url and token."
-                
-            control = db.query(models.Control).filter_by(control_code="SOC2-MFA-01", org_id=org_id).first()
-            if control: 
-                control.status = "Passing" if compliant else "Warning"
-                control.last_tested = int(time.time())
-                
-        elif integration_id == "auth0":
-            creds = parse_integration_credentials(creds_str)
-            domain = creds.get("domain") or os.environ.get("AUTH0_DOMAIN")
-            client_id = creds.get("client_id") or os.environ.get("AUTH0_CLIENT_ID")
-            client_secret = creds.get("client_secret") or os.environ.get("AUTH0_CLIENT_SECRET")
-            
-            if domain and client_id and client_secret:
-                client = integration_clients.Auth0Client(domain, client_id, client_secret)
-                
-                # Audit users
-                user_res = client.audit_users()
-                user_count = user_res.get("details", {}).get("total_users", 0)
-                
-                # Audit MFA enrollment
-                mfa_res = client.audit_mfa_enrollment()
-                compliant = mfa_res.get("compliant", False)
-                reason = mfa_res.get("reason", "Auth0 MFA audit completed.")
-                
-                # Update MFA control status based on Auth0 audit
-                control = db.query(models.Control).filter(
-                    models.Control.control_code == "SOC2-MFA-01",
-                    models.Control.org_id == org_id
-                ).first()
-                if control:
-                    control.status = "Passing" if compliant else "Warning"
-                    control.last_tested = int(time.time())
-            else:
-                compliant = False
-                reason = "Auth0 credentials not configured in .env file. Set AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET."
-
-        elif integration_id == "gcp":
-            client = integration_clients.GCPClient(creds.get("service_account_json"), creds.get("project_id"))
-            res = client.audit_bucket_encryption(creds.get("bucket_name") or os.environ.get("GCP_AUDIT_BUCKET", ""))
-            compliant, reason = res.get("compliant", False), res.get("reason", "GCP audit completed.")
-
-        elif integration_id == "azure":
-            client = integration_clients.AzureClient(
-                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"),
-                creds.get("subscription_id"), creds.get("resource_group"), creds.get("account_name"))
-            res = client.audit_storage_account()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Azure audit completed.")
-
-        elif integration_id == "entra":
-            client = integration_clients.EntraClient(
-                creds.get("tenant_id"), creds.get("client_id"), creds.get("client_secret"))
-            res = client.audit_mfa_enrollment()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Entra audit completed.")
-
-        elif integration_id == "google_workspace":
-            client = integration_clients.GoogleWorkspaceClient(
-                creds.get("service_account_json"), creds.get("admin_email"),
-                creds.get("customer", "my_customer"))
-            res = client.audit_2sv_enrollment()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Workspace audit completed.")
-
-        elif integration_id == "crowdstrike":
-            client = integration_clients.CrowdStrikeClient(
-                creds.get("client_id"), creds.get("client_secret"), creds.get("base_url"))
-            res = client.audit_sensor_coverage()
-            compliant, reason = res.get("compliant", False), res.get("reason", "CrowdStrike audit completed.")
-
-        elif integration_id == "snyk":
-            client = integration_clients.SnykClient(creds.get("token"), creds.get("org_id"))
-            res = client.audit_vulnerabilities()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Snyk audit completed.")
-
-        elif integration_id == "jamf":
-            client = integration_clients.JamfClient(
-                creds.get("base_url"), creds.get("client_id"), creds.get("client_secret"),
-                creds.get("username"), creds.get("password"))
-            res = client.audit_disk_encryption()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Jamf audit completed.")
-
-        elif integration_id == "workday":
-            client = integration_clients.WorkdayClient(
-                creds.get("report_url"), creds.get("username"), creds.get("password"))
-            res = client.audit_worker_roster()
-            compliant, reason = res.get("compliant", False), res.get("reason", "Workday audit completed.")
-
+        handler = integration_clients.SYNC_HANDLERS.get(integration_id)
+        if handler is None:
+            result = {"compliant": False,
+                      "reason": f"No live audit handler is configured for connector '{integration_id}'."}
         else:
-            compliant = False
-            reason = f"No live audit handler is configured for connector '{integration_id}'."
+            result = handler(creds)
+        compliant = result.get("compliant", False)
+        reason = result.get("reason", "Sync completed.")
 
         integration.last_audit_summary = reason
+        integration.last_audit_checks = result.get("details", {}).get("checks")
         integration.status = "Connected" if compliant else "Error"
+
+        # Any asset linked to this integration inherits the audit outcome.
+        for asset in db.query(models.Asset).filter_by(integration_id=integration_id, org_id=org_id).all():
+            asset.compliance_status = "Passing" if compliant else "Failing"
         db.commit()
 
         # Bridge the sync result to every imported control this connector tests
-        # (covers all connectors uniformly, including ones with no bespoke block
-        # above) and refresh affected framework readiness.
+        # and refresh affected framework readiness / drift events.
         try:
             framework_library.apply_connector_result(db, org_id, integration_id, compliant, source=source)
         except Exception as e:
             print(f"Connector->control mapping skipped for {integration_id}: {e}")
     finally:
         db.close()
+
+
+@app.get("/api/integrations/fields")
+def get_integration_fields(current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Per-connector credential field specs that drive the connect form."""
+    import integration_clients
+    return {"fields": integration_clients.CONNECTOR_FIELDS, "oauth": []}
 
 @app.post("/api/integrations/{id}/sync")
 def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
@@ -2061,111 +2269,14 @@ def sync_integration(id: str, background_tasks: BackgroundTasks, db: Session = D
 
 @app.get("/api/integrations/{id}/logs")
 def get_integration_logs(id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"]))):
+    """Real audit outcome only — no fabricated log timeline."""
     integration = db.query(models.Integration).filter_by(id=id, org_id=current_user.org_id).first()
-    level = "SUCCESS"
-    status_msg = (integration.last_audit_summary if integration and integration.last_audit_summary
-                  else "No sync has been run yet for this connector.")
-    if integration and integration.status == "Error":
-        level = "ERROR"
-    elif not integration or not integration.last_audit_summary:
-        level = "INFO"
-    base = int(time.time())
-    return [
-        {"timestamp": base - 30, "level": "INFO", "message": f"Establishing secure API channel to {id}..."},
-        {"timestamp": base - 20, "level": "INFO", "message": "Fetching remote security configuration via live vendor API..."},
-        {"timestamp": base - 10, "level": "INFO", "message": "Evaluating compliance against connected control evidence..."},
-        {"timestamp": base, "level": level, "message": status_msg}
-    ]
-
-# OAuth redirects and callbacks for integrations
-@app.get("/api/integrations/{id}/authorize")
-def oauth_authorize(id: str, current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    from fastapi.responses import RedirectResponse
-    if id == "github":
-        client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
-        api_base = os.environ.get("PUBLIC_API_BASE_URL", "http://localhost:8000").rstrip("/")
-        redirect_uri = f"{api_base}/api/integrations/github/callback"
-        
-        if client_id and client_id != "your_github_client_id":
-            authorize_url = f"https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={redirect_uri}&scope=repo,read:org&state={current_user.org_id}"
-            return RedirectResponse(authorize_url)
-        raise HTTPException(status_code=400, detail="GitHub OAuth is not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET.")
-    raise HTTPException(status_code=400, detail=f"OAuth is not configured for {id}. Use API credentials for this system.")
-
-@app.get("/api/integrations/github/callback")
-def oauth_callback(code: str, state: str = DEFAULT_COMPANY_ID, db: Session = Depends(database.get_db)):
-    import seed
-    try:
-        seed.seed_org_data(db, state)
-    except Exception as e:
-        print(f"Error seeding organization {state} in callback: {str(e)}")
-        # Fallback to ensure organization row exists
-        org = db.query(models.Organization).filter_by(id=state).first()
-        if not org:
-            org = models.Organization(id=state, name=DEFAULT_COMPANY_NAME, created_at=int(time.time()))
-            db.add(org)
-            db.commit()
-
-    client_id = os.environ.get("GITHUB_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GITHUB_CLIENT_SECRET", "").strip()
-    
-    token = None
-    
-    if client_id and client_id != "your_github_client_id" and client_secret:
-        import httpx
-        try:
-            headers = {"Accept": "application/json"}
-            data = {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code
-            }
-            res = httpx.post("https://github.com/login/oauth/access_token", headers=headers, json=data, timeout=10.0)
-            if res.status_code == 200:
-                res_json = res.json()
-                if "access_token" in res_json:
-                    token = res_json["access_token"]
-        except Exception as e:
-            print(f"GitHub OAuth exchange failed: {str(e)}")
-            
-    if not token:
-        raise HTTPException(status_code=400, detail="GitHub OAuth exchange failed. No access token was returned.")
-
-    # Store token under company state
-    integration = db.query(models.Integration).filter_by(id="github", org_id=state).first()
-    if not integration:
-        integration = models.Integration(id="github", org_id=state, name="GitHub Developer Portal", category="Developer")
-        db.add(integration)
-        
-    integration.status = "Connected"
-    integration.last_sync = int(time.time())
-    
-    # Encrypt
-    vault_key = get_required_vault_key()
-    integration.credentials = security.encrypt_log(token, vault_key)
-    
-    # Cascade status updates to matching assets and controls (live integrations effect)
-    control = db.query(models.Control).filter_by(control_code="GIT-BR-01", org_id=state).first()
-    if control: 
-        control.status = "Passing"
-        control.last_tested = int(time.time())
-    asset = db.query(models.Asset).filter_by(integration_id="github", org_id=state).first()
-    if asset: 
-        asset.compliance_status = "Passing"
-    risk = db.query(models.Risk).filter(models.Risk.org_id == state, models.Risk.title.contains("Developer")).first()
-    if risk: 
-        risk.residual_score = 3
-        risk.status = "Mitigated"
-
-    db.commit()
-    
-    from fastapi.responses import RedirectResponse
-    frontend_base = os.environ.get("FRONTEND_BASE_URL", "http://localhost:3000").rstrip("/")
-    return RedirectResponse(f"{frontend_base}/integrations?status=success&id=github")
-
-@app.get("/api/integrations/{id}/callback")
-def oauth_generic_callback(id: str, code: str, state: str = DEFAULT_COMPANY_ID, db: Session = Depends(database.get_db)):
-    raise HTTPException(status_code=400, detail=f"OAuth callback is not available for {id}. Configure API credentials and run Sync.")
+    if not integration or not integration.last_audit_summary:
+        return [{"timestamp": int(time.time()), "level": "INFO",
+                 "message": "No sync has been run yet for this connector."}]
+    level = "ERROR" if integration.status == "Error" else "SUCCESS"
+    return [{"timestamp": integration.last_sync or int(time.time()), "level": level,
+             "message": integration.last_audit_summary, "checks": integration.last_audit_checks}]
 
 # 4. Controls Monitoring
 @app.get("/api/controls")
@@ -2178,8 +2289,13 @@ def get_controls(department: Optional[str] = Query(None), db: Session = Depends(
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({c.owner_id for c in items if c.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for control in query.all():
+    for control in items:
         item = {
             "id": control.id,
             "org_id": control.org_id,
@@ -2190,7 +2306,7 @@ def get_controls(department: Optional[str] = Query(None), db: Session = Depends(
             "status": control.status,
             "owner_id": control.owner_id,
             "last_tested": control.last_tested,
-            "department": department_for_owner(db, current_user.org_id, control.owner_id)
+            "department": owner_dept.get(control.owner_id, "Unassigned")
         }
         result.append(item)
     return result
@@ -2216,8 +2332,13 @@ def get_risks(department: Optional[str] = Query(None), db: Session = Depends(dat
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({r.owner_id for r in items if r.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for risk in query.all():
+    for risk in items:
         result.append({
             "id": risk.id,
             "org_id": risk.org_id,
@@ -2229,7 +2350,8 @@ def get_risks(department: Optional[str] = Query(None), db: Session = Depends(dat
             "residual_score": risk.residual_score,
             "status": risk.status,
             "owner_id": risk.owner_id,
-            "department": department_for_owner(db, current_user.org_id, risk.owner_id)
+            "department": owner_dept.get(risk.owner_id, "Unassigned"),
+            "mitigations": [{"id": c.id, "control_code": c.control_code} for c in risk.mitigations],
         })
     return result
 
@@ -2287,7 +2409,15 @@ def get_policies(db: Session = Depends(database.get_db), current_user: models.Us
     return result
 
 @app.post("/api/policies/upload")
-async def upload_policy(title: str = Form(...), file: UploadFile = File(...), db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
+async def upload_policy(
+    title: str = Form(...),
+    file: UploadFile = File(...),
+    regulatory_version: Optional[str] = Form(None),
+    effective_date: Optional[str] = Form(None),
+    expiration_date: Optional[str] = Form(None),
+    db: Session = Depends(database.get_db),
+    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"])),
+):
     content = await file.read()
     safe_filename = validate_upload(file.filename, content, {".pdf", ".txt", ".md", ".csv", ".json"})
     stored_filename = f"policy_{uuid.uuid4()}_{safe_filename}"
@@ -2319,7 +2449,10 @@ async def upload_policy(title: str = Form(...), file: UploadFile = File(...), db
         f.write(content)
         
     try:
-        rag.ingest_document(temp_path, stored_filename, org_id=current_user.org_id, source_type="policy", replace_existing=True)
+        rag.ingest_document(
+            temp_path, stored_filename, org_id=current_user.org_id, source_type="policy", replace_existing=True,
+            effective_date=effective_date, expiration_date=expiration_date, regulatory_version=regulatory_version,
+        )
     except Exception as e:
         print(f"RAG policy chunking skipped: {str(e)}")
     finally:
@@ -2622,8 +2755,13 @@ def get_assets(department: Optional[str] = Query(None), db: Session = Depends(da
         current_user.org_id,
         department
     )
+    items = query.all()
+    owner_ids = list({a.owner_id for a in items if a.owner_id})
+    users = db.query(models.User).filter(models.User.id.in_(owner_ids)).all() if owner_ids else []
+    owner_dept = {u.id: (u.department or "Unassigned") for u in users}
+
     result = []
-    for asset in query.all():
+    for asset in items:
         result.append({
             "id": asset.id,
             "org_id": asset.org_id,
@@ -2633,7 +2771,7 @@ def get_assets(department: Optional[str] = Query(None), db: Session = Depends(da
             "compliance_status": asset.compliance_status,
             "is_in_scope": asset.is_in_scope,
             "integration_id": asset.integration_id,
-            "department": department_for_owner(db, current_user.org_id, asset.owner_id)
+            "department": owner_dept.get(asset.owner_id, "Unassigned")
         })
     return result
 
@@ -2681,90 +2819,7 @@ def create_audit_comment(request: CommentCreateRequest, db: Session = Depends(da
     db.commit()
     return {"status": "success"}
 
-# 11. Security Trust Center
-@app.get("/api/trust/documents")
-def get_trust_documents():
-    # Trust Center documents are published by the operator; none ship by default.
-    return []
-
-class NDASignRequest(BaseModel):
-    company_name: str
-    contact_email: str
-
-@app.post("/api/trust/sign-nda")
-def sign_nda(request: NDASignRequest):
-    return {"status": "success", "nda_signed": True, "token": str(uuid.uuid4())}
-
-class TrustChatRequest(BaseModel):
-    query: str
-
-@app.post("/api/trust/chat")
-def trust_center_chat(request: TrustChatRequest):
-    prompt = f"Respond to prospective client query: '{request.query}'. Verify compliance posture using Basel III, CBEST, and GDPR controls."
-    response = ai_gateway.generate_content(prompt, "You are a customer trust advisor assistant answering security audits.")
-    # Note: trust_center_chat has no current_user dependency yet; org_id plumbing is handled via agent-query
-    return {"response": response}
-
 # 12. AI Agent Console & Trust Graph Node-link calculations
-class AgentQueryRequest(BaseModel):
-    agent_id: str
-    prompt: str
-
-# Map the UI's agent ids to the agno agent ids defined in ai_agents.AGENT_DEFINITIONS.
-AGENT_ID_MAP = {
-    "compliance_agent": "compliance-agent",
-    "tprm_agent": "tprm-agent",
-    "trust_agent": "customer-trust-agent",
-    "risk_agent": "risk-propagation-agent",
-}
-
-@app.post("/api/ai/agent-query")
-def query_ai_agent(request: AgentQueryRequest, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
-    agno_agent_id = AGENT_ID_MAP.get(request.agent_id)
-    if not agno_agent_id:
-        # Unknown agent id -> answer with a generic GRC officer persona (no tool steps).
-        response = ai_gateway.generate_content(
-            request.prompt, "You are a senior GRC compliance officer.", org_id=current_user.org_id
-        )
-        return {"response": response, "steps": []}
-
-    result = ai_agents.run_agent_detailed(agno_agent_id, request.prompt, current_user.org_id)
-    return {"response": result["content"], "steps": result.get("steps", [])}
-
-@app.get("/api/ai/trust-graph")
-def get_trust_graph(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.get_current_user)):
-    nodes = []
-    links = []
-    
-    integrations = db.query(models.Integration).filter_by(org_id=current_user.org_id).all()
-    for i in integrations:
-        nodes.append({"id": i.id, "label": i.name, "type": "integration", "status": i.status})
-        
-    assets = db.query(models.Asset).filter_by(org_id=current_user.org_id).all()
-    for a in assets:
-        nodes.append({"id": a.id, "label": a.name, "type": "asset", "status": a.compliance_status})
-        if a.integration_id:
-            links.append({"source": a.integration_id, "target": a.id, "type": "provides"})
-            
-    controls = db.query(models.Control).filter_by(org_id=current_user.org_id).all()
-    for c in controls:
-        nodes.append({"id": c.id, "label": c.title, "type": "control", "status": c.status})
-        if "CET1" in c.control_code:
-            links.append({"source": "aws", "target": c.id, "type": "audits"})
-        elif "GDPR" in c.control_code:
-            links.append({"source": "asset-01", "target": c.id, "type": "secures"})
-        elif "MFA" in c.control_code:
-            links.append({"source": "okta", "target": c.id, "type": "governs"})
-        elif "GIT" in c.control_code:
-            links.append({"source": "asset-02", "target": c.id, "type": "checks"})
-            
-    risks = db.query(models.Risk).filter_by(org_id=current_user.org_id).all()
-    for r in risks:
-        nodes.append({"id": r.id, "label": r.title, "type": "risk", "status": r.status})
-        for mit in r.mitigations:
-            links.append({"source": mit.id, "target": r.id, "type": "mitigates"})
-            
-    return {"nodes": nodes, "links": links}
 
 # 13. Framework List & Dynamic Progress
 @app.get("/api/frameworks")
@@ -2875,137 +2930,6 @@ def sync_all_integrations(background_tasks: BackgroundTasks, current_user: model
     return {"status": "started", "message": "Re-syncing all connected integrations."}
 
 
-# --- Remediation tasks ---
-
-class RemediationTaskCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    control_code: Optional[str] = None
-    owner_id: Optional[str] = None
-    priority: Optional[str] = "Medium"
-    due_date: Optional[int] = None
-
-
-class RemediationTaskUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    owner_id: Optional[str] = None
-    priority: Optional[str] = None
-    status: Optional[str] = None
-    due_date: Optional[int] = None
-
-
-def _serialize_task(t: models.RemediationTask, owner_name: Optional[str] = None) -> dict:
-    return {
-        "id": t.id,
-        "title": t.title,
-        "description": t.description,
-        "control_code": t.control_code,
-        "owner_id": t.owner_id,
-        "owner_name": owner_name,
-        "priority": t.priority,
-        "status": t.status,
-        "due_date": t.due_date,
-        "created_at": t.created_at,
-        "updated_at": t.updated_at,
-    }
-
-
-@app.get("/api/tasks")
-def list_remediation_tasks(
-    status: Optional[str] = Query(None),
-    db: Session = Depends(database.get_db),
-    current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
-):
-    q = db.query(models.RemediationTask).filter_by(org_id=current_user.org_id)
-    if status:
-        q = q.filter(models.RemediationTask.status == status)
-    tasks = q.order_by(models.RemediationTask.created_at.desc()).all()
-    owner_ids = {t.owner_id for t in tasks if t.owner_id}
-    owners = {
-        u.id: u.name
-        for u in db.query(models.User).filter(models.User.id.in_(owner_ids or [""])).all()
-    }
-    return [_serialize_task(t, owners.get(t.owner_id)) for t in tasks]
-
-
-@app.post("/api/tasks")
-def create_remediation_task(req: RemediationTaskCreate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    now = int(time.time())
-    control = None
-    if req.control_code:
-        control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=req.control_code).first()
-    task = models.RemediationTask(
-        id=f"task_{uuid.uuid4().hex[:12]}",
-        org_id=current_user.org_id,
-        title=req.title,
-        description=req.description,
-        control_id=control.id if control else None,
-        control_code=req.control_code,
-        owner_id=req.owner_id,
-        priority=req.priority or "Medium",
-        status="Open",
-        due_date=req.due_date,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.post("/api/tasks/from-control/{control_code}")
-def create_task_from_control(control_code: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    """Create a remediation task pre-filled from a failing/at-risk control."""
-    control = db.query(models.Control).filter_by(org_id=current_user.org_id, control_code=control_code).first()
-    if not control:
-        raise HTTPException(status_code=404, detail="Control not found.")
-    now = int(time.time())
-    priority = "High" if control.status == "Failing" else "Medium"
-    task = models.RemediationTask(
-        id=f"task_{uuid.uuid4().hex[:12]}",
-        org_id=current_user.org_id,
-        title=f"Remediate: {control.title}",
-        description=f"Control {control.control_code} is {control.status}. {control.description or ''}".strip(),
-        control_id=control.id,
-        control_code=control.control_code,
-        owner_id=control.owner_id,
-        priority=priority,
-        status="Open",
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(task)
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.patch("/api/tasks/{task_id}")
-def update_remediation_task(task_id: str, req: RemediationTaskUpdate, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    for field in ("title", "description", "owner_id", "priority", "status", "due_date"):
-        val = getattr(req, field)
-        if val is not None:
-            setattr(task, field, val)
-    task.updated_at = int(time.time())
-    db.commit()
-    db.refresh(task)
-    return _serialize_task(task)
-
-
-@app.delete("/api/tasks/{task_id}")
-def delete_remediation_task(task_id: str, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor"]))):
-    task = db.query(models.RemediationTask).filter_by(id=task_id, org_id=current_user.org_id).first()
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    db.delete(task)
-    db.commit()
-    return {"status": "deleted", "id": task_id}
-
 
 # --- Notifications ---
 
@@ -3015,13 +2939,6 @@ def list_notifications(
     db: Session = Depends(database.get_db),
     current_user: models.User = Depends(auth.RequireRole(["Admin", "Editor", "Auditor", "Viewer"])),
 ):
-    """List notifications. Generates overdue-task alerts on read (idempotent)."""
-    import notifications as notif
-    try:
-        notif.generate_overdue_task_notifications(db, current_user.org_id)
-    except Exception as e:
-        print(f"Overdue notification generation skipped: {e}")
-
     q = db.query(models.Notification).filter_by(org_id=current_user.org_id)
     if unread_only:
         q = q.filter(models.Notification.read == False)  # noqa: E712
@@ -3111,3 +3028,102 @@ def export_report(
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
     raise HTTPException(status_code=400, detail="format must be 'csv' or 'pdf'.")
+
+@app.get("/api/security/attestation-status")
+def get_attestation_status(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    """Returns current LLM provider attestation report for regulatory audit.
+    Per EU AI Act Art. 9 (Risk Management) + Art. 13 (Transparency).
+    Real Google-signed workload identity attestation on GCP; software
+    TPM2_QUOTE simulation as local-dev fallback. See attestation.py."""
+    import attestation as att_module
+    org_id = current_user.org_id
+    active_config = db.query(models.AIProviderConfig).filter_by(is_active=True, org_id=org_id).first()
+    if not active_config:
+        return {
+            "attested": False,
+            "provider": "none",
+            "error": "No active AI provider configured for this organization.",
+            "policy_violations": ["No AI provider configured"]
+        }
+    model_name = active_config.model_override or ai_gateway.PROVIDER_DEFAULT_MODEL.get(active_config.id, "")
+    report = att_module.attest_provider(
+        provider_type=active_config.id,
+        model_name=model_name,
+        base_url=active_config.base_url or ""
+    )
+    return report
+
+# ---------------------------------------------------------------------------
+# Mechanic queue (Inspector-Mechanic architecture, Phase 4)
+#
+# The Mechanic agent (ai_agents.py) proposes control/risk status changes but
+# never applies them. An Admin must approve or reject each proposal here;
+# approval is the only path that actually writes Control.status/Risk.status.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/mechanic/queue")
+def get_remediation_queue(db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin", "Auditor"]))):
+    actions = db.query(models.RemediationAction).filter_by(org_id=current_user.org_id).order_by(models.RemediationAction.proposed_at.desc()).all()
+    return [
+        {
+            "id": a.id,
+            "target_type": a.target_type,
+            "target_id": a.target_id,
+            "proposed_status": a.proposed_status,
+            "rationale": a.rationale,
+            "status": a.status,
+            "proposed_at": a.proposed_at,
+            "decided_by": a.decided_by,
+            "decided_at": a.decided_at,
+        }
+        for a in actions
+    ]
+
+
+@app.post("/api/mechanic/{id}/approve")
+def approve_remediation(id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    action = db.query(models.RemediationAction).filter_by(id=id, org_id=current_user.org_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Remediation action not found.")
+    if action.status != "PROPOSED":
+        raise HTTPException(status_code=409, detail=f"Action already {action.status.lower()}, cannot approve again.")
+
+    target_model = models.Control if action.target_type == "control" else models.Risk
+    target = db.query(target_model).filter_by(id=action.target_id, org_id=current_user.org_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Target {action.target_type} no longer exists.")
+
+    old_status = target.status
+    target.status = action.proposed_status
+    if action.target_type == "control":
+        db.add(models.ControlStatusEvent(
+            org_id=current_user.org_id,
+            control_id=target.id,
+            control_code=target.control_code,
+            old_status=old_status,
+            new_status=action.proposed_status,
+            source="mechanic_agent",
+            is_drift=(old_status == "Passing" and action.proposed_status in ("Failing", "Warning")),
+            detected_at=int(time.time()),
+        ))
+
+    action.status = "APPLIED"
+    action.decided_by = current_user.id
+    action.decided_at = int(time.time())
+    db.commit()
+    return {"status": "applied", "target_type": action.target_type, "target_id": action.target_id, "new_status": action.proposed_status}
+
+
+@app.post("/api/mechanic/{id}/reject")
+def reject_remediation(id: int, db: Session = Depends(database.get_db), current_user: models.User = Depends(auth.RequireRole(["Admin"]))):
+    action = db.query(models.RemediationAction).filter_by(id=id, org_id=current_user.org_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Remediation action not found.")
+    if action.status != "PROPOSED":
+        raise HTTPException(status_code=409, detail=f"Action already {action.status.lower()}, cannot reject again.")
+
+    action.status = "REJECTED"
+    action.decided_by = current_user.id
+    action.decided_at = int(time.time())
+    db.commit()
+    return {"status": "rejected"}

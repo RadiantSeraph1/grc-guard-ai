@@ -43,8 +43,7 @@ The GRC agents live in `backend/ai_agents.py` (real agno `Agent` objects with
 RAG + GRC-graph tools). They are exposed two ways:
 
 1. **In-app** via `POST /api/ai/agent-query`.
-2. **AgentOS server** (`backend/agent_os.py`) — the agno HTTP runtime that the
-   **agno UI** (`agent-ui/`) connects to for a full chat experience.
+2.   **FastAPI Backend** (`backend/`) runs the `AgentOS` routes for AI queries.
 
 ## Connectors / Data Sources
 
@@ -53,22 +52,19 @@ is provisioned per-organization (all start `Disconnected`):
 
 | Connector | Category | Live check |
 |-----------|----------|------------|
-| Amazon Web Services | Cloud | S3 bucket encryption |
-| Google Cloud Platform | Cloud | GCS encryption / public-access prevention |
-| Microsoft Azure | Cloud | Storage Account HTTPS-only + encryption |
-| Okta | Identity | User MFA factor enrollment |
-| Auth0 | Identity | Users, MFA Guardian, login logs, roles |
-| Microsoft Entra ID (M365) | Identity | Per-user MFA via Microsoft Graph |
+| Google Cloud Platform | Cloud | GCS encryption / public-access prevention + SSH/RDP firewall exposure |
 | Google Workspace | Identity | 2-Step Verification enrollment (Admin SDK) |
-| GitHub | Developer | Branch protection / PR review rules |
-| Snyk | Developer | Open critical/high vulnerabilities |
-| CrowdStrike Falcon | EDR | Endpoint sensor coverage |
-| Jamf Pro | EDR | Managed Mac FileVault encryption |
-| Workday | HRIS | Active worker roster (RaaS) |
+| Apache Fineract | Core Banking | Maker-checker (four-eyes) approval, password policy, audit trail on the ledger |
+| Wazuh | EDR/XDR | Endpoint agent/sensor coverage, outdated agents, manager health |
 
-Connect a system from the Integrations page by supplying read-only credentials
-(JSON), then run **Sync** to pull live evidence. Credentials are encrypted at
-rest with the BYOK vault.
+This is a **banking-first** connector set. GCP and Google Workspace use live
+SaaS credentials; **Apache Fineract** (a real open-source core-banking ledger)
+and **Wazuh** (open-source EDR/XDR) are self-hosted so the banking and endpoint
+evidence is genuinely live rather than mocked.
+
+Connect a system from the Integrations page by supplying read-only credentials,
+then run **Sync** to pull live evidence. Credentials are encrypted at rest with
+the BYOK vault.
 
 ## Compliance Frameworks & Control Mapping
 
@@ -77,12 +73,12 @@ demo data — the organization stays empty until you import what you need.
 
 | Framework | Code | Notes |
 |-----------|------|-------|
+| Basel III (recommended) | BASEL-III | Banking capital, liquidity, stress testing — the banking-first default |
 | SOC 2 Type II | SOC2 | AICPA Trust Services Criteria |
 | ISO/IEC 27001:2022 | ISO27001 | ISMS Annex A controls |
 | NIST CSF 2.0 | NIST-CSF | Identify/Protect/Detect/Respond/Recover/Govern |
 | PCI DSS v4.0 | PCI-DSS | Cardholder data protection |
 | GDPR | GDPR | EU personal-data processing |
-| Basel III | BASEL-III | Banking capital, liquidity, stress testing |
 
 How it works:
 
@@ -98,10 +94,9 @@ How it works:
 3. **Remove** a framework (`DELETE /api/frameworks/{id}`) strips its tag and
    deletes only controls that belonged solely to it; shared controls survive.
 
-Connector → control coverage: AWS/GCP/Azure → encryption at rest;
-Okta/Auth0/Entra/Google Workspace → MFA; GitHub → secure change management;
-Snyk → vulnerability management; CrowdStrike → EDR coverage; Jamf → endpoint
-disk encryption; Workday → personnel access governance.
+Connector → control coverage: GCP → encryption at rest; Google Workspace → MFA;
+Fineract → segregation of duties (maker-checker) + audit logging; Wazuh → EDR
+coverage.
 
 ## RAG (Hybrid Semantic + Lexical)
 
@@ -155,14 +150,11 @@ above; only the small NIST catalog is committed.
 ## Repository Structure
 
 ```text
-backend/    FastAPI API, SQLAlchemy models, RAG, agno AI gateway, agents, connectors
-backend/agent_os.py          Standalone AgentOS server (agno UI backend)
+backend/    FastAPI backend (business logic, DB, connectors, agents)
 backend/framework_library.py Importable framework catalog + connector->control mapping
 backend/rag.py               Hybrid semantic + lexical document retrieval
 backend/training/            Dataset acquisition + prep for custom auditor models
-frontend/   Next.js App Router UI with Clerk auth and operational dashboards
-agent-ui/   agno UI (chat interface for the AgentOS agents)
-docs/       PRD, TRD, UI/UX, AI backend, AI use, RAG, and analysis docs
+frontend/   Next.js React frontend (Tailwind, Lucide, Clerk)RAG, and analysis docs
 ```
 
 ## Backend Setup
@@ -198,36 +190,11 @@ ANTHROPIC_API_KEY=sk-ant-...
 # EMBEDDING_MODEL=                # optional override of the default model
 
 # Connector credentials can also be supplied per-connector in the UI.
-# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_AUDIT_BUCKET
 # GCP_SERVICE_ACCOUNT_JSON / GCP_PROJECT_ID / GCP_AUDIT_BUCKET
-# AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_SUBSCRIPTION_ID / AZURE_RESOURCE_GROUP / AZURE_STORAGE_ACCOUNT
-# OKTA_ORG_URL / OKTA_API_TOKEN
-# AUTH0_DOMAIN / AUTH0_CLIENT_ID / AUTH0_CLIENT_SECRET
 # GOOGLE_WORKSPACE_SA_JSON / GOOGLE_WORKSPACE_ADMIN
-# GITHUB_TOKEN (or OAuth: GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET)
-# SNYK_TOKEN / SNYK_ORG_ID
-# CROWDSTRIKE_CLIENT_ID / CROWDSTRIKE_CLIENT_SECRET / CROWDSTRIKE_BASE_URL
-# JAMF_BASE_URL / JAMF_CLIENT_ID / JAMF_CLIENT_SECRET
-# WORKDAY_REPORT_URL / WORKDAY_USERNAME / WORKDAY_PASSWORD
+# FINERACT_BASE_URL / FINERACT_USERNAME / FINERACT_PASSWORD / FINERACT_TENANT
+# WAZUH_BASE_URL / WAZUH_USERNAME / WAZUH_PASSWORD
 ```
-
-## AgentOS + agno UI
-
-The agno UI is a separate chat app that talks to the AgentOS runtime.
-
-```bash
-# 1. Start AgentOS (serves the GRC agents on :7777)
-cd backend
-python agent_os.py            # or: uvicorn agent_os:app --port 7777
-
-# 2. Start the agno UI
-cd agent-ui
-npm install
-npm run dev                   # http://localhost:3001 (or as printed)
-```
-
-In the agno UI, point the endpoint at `http://localhost:7777` (the default).
-AgentOS needs an `ANTHROPIC_API_KEY` (or another configured provider) to respond.
 
 ## Frontend Setup
 

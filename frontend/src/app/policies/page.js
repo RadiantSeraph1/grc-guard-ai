@@ -15,6 +15,9 @@ export default function PoliciesPage() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newFile, setNewFile] = useState(null);
+  const [regulatoryVersion, setRegulatoryVersion] = useState("");
+  const [effectiveDate, setEffectiveDate] = useState("");
+  const [expirationDate, setExpirationDate] = useState("");
   const [uploading, setUploading] = useState(false);
   const [busyId, setBusyId] = useState(null);
 
@@ -37,6 +40,9 @@ export default function PoliciesPage() {
     setUploadOpen(false);
     setNewTitle("");
     setNewFile(null);
+    setRegulatoryVersion("");
+    setEffectiveDate("");
+    setExpirationDate("");
   };
 
   const handleUploadPolicy = async (e) => {
@@ -46,6 +52,9 @@ export default function PoliciesPage() {
     const formData = new FormData();
     formData.append("title", newTitle);
     formData.append("file", newFile);
+    if (regulatoryVersion.trim()) formData.append("regulatory_version", regulatoryVersion.trim());
+    if (effectiveDate) formData.append("effective_date", effectiveDate);
+    if (expirationDate) formData.append("expiration_date", expirationDate);
     try {
       await api.post("/api/policies/upload", formData);
       resetForm();
@@ -167,9 +176,20 @@ export default function PoliciesPage() {
               <input type="file" required onChange={(e) => setNewFile(e.target.files[0])} className="absolute inset-0 opacity-0 cursor-pointer" />
             </div>
           </Field>
+          <Field label="Regulatory version (optional)">
+            <Input value={regulatoryVersion} onChange={(e) => setRegulatoryVersion(e.target.value)} placeholder="e.g. Basel III 2019 revision" />
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Effective date (optional)">
+              <Input type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} />
+            </Field>
+            <Field label="Expiration date (optional)">
+              <Input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} />
+            </Field>
+          </div>
           <div className="flex items-center gap-2 text-xs text-zinc-400 bg-zinc-900/50 p-3 rounded-lg border border-zinc-800">
             <ShieldAlert size={14} className="shrink-0 text-zinc-500" />
-            <span>Uploaded items are indexed by RAG for compliance scanning.</span>
+            <span>Uploaded items are indexed by RAG (with automatic PII redaction) for compliance scanning. An expiration date excludes this document from future scans automatically.</span>
           </div>
           <Button type="submit" variant="primary" loading={uploading} disabled={!newFile} className="w-full">
             {uploading ? "Analyzing & indexing…" : "Publish draft policy"}

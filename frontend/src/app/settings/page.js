@@ -1,18 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Cpu, Key, CheckCircle2, X, Check, ShieldAlert, AlertTriangle } from "lucide-react";
+import { Cpu, Key, CheckCircle2, X, Check, ShieldAlert, AlertTriangle, Sparkles, Loader2 } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button, Skeleton, Modal, Field, Input, cn,
 } from "../components/ui";
 
 const PROVIDER_DESC = {
-  inhouse: "Our own trained GRC model, served over an OpenAI-compatible endpoint (set its base URL).",
-  groq: "Interim Groq hosted inference for testing until the in-house model is ready.",
+  gemini: "Google Vertex AI Gemini model. Authenticates via Application Default Credentials (Workload Identity) — no API key needed.",
 };
-const NO_KEY_REQUIRED = ["inhouse"];
-const NEEDS_BASE_URL = ["groq", "inhouse"];
+const NO_KEY_REQUIRED = ["gemini"];
 
 const TABS = [
   { id: "ai", label: "AI Gateway", icon: Cpu },
@@ -28,13 +26,14 @@ export default function SettingsPage() {
 
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [modelOverride, setModelOverride] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
 
   const [byokKey, setByokKey] = useState("");
   const [byokSaved, setByokSaved] = useState(false);
+
+  const [finetuning, setFinetuning] = useState(null);
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -51,6 +50,42 @@ export default function SettingsPage() {
     fetchProviders();
   }, [fetchProviders]);
 
+  // Poll while any provider has a fine-tuning job in flight.
+  const anyJobRunning = providers.some((p) =>
+    ["QUEUED", "JOB_STATE_QUEUED", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"].includes(p.tuning_status)
+  );
+  useEffect(() => {
+    if (!anyJobRunning) return;
+    const interval = setInterval(fetchProviders, 15000);
+    return () => clearInterval(interval);
+  }, [anyJobRunning, fetchProviders]);
+
+  const handleStartFinetune = async (id) => {
+    setFinetuning(id);
+    setError(null);
+    try {
+      await api.post(`/api/settings/ai-providers/${id}/finetune`);
+      await fetchProviders();
+    } catch (err) {
+      setError(err.message || "Failed to start fine-tuning job.");
+      setTimeout(() => setError(null), 6000);
+    } finally {
+      setFinetuning(null);
+    }
+  };
+
+  const handleUseTunedModel = async (id, tunedModel) => {
+    try {
+      await api.post(`/api/settings/ai-providers/${id}`, { model_override: tunedModel });
+      setSuccessMessage("Tuned model set as the active model override.");
+      setTimeout(() => setSuccessMessage(null), 3000);
+      await fetchProviders();
+    } catch (err) {
+      setError(err.message || "Failed to apply tuned model.");
+      setTimeout(() => setError(null), 6000);
+    }
+  };
+
   const handleSaveProvider = async (e) => {
     e.preventDefault();
     if (!configuringProvider) return;
@@ -59,10 +94,9 @@ export default function SettingsPage() {
       await api.post(`/api/settings/ai-providers/${configuringProvider.id}`, {
         api_key: apiKey,
         base_url: baseUrl || null,
-        model_override: modelOverride || null,
       });
       setConfiguringProvider(null);
-      setApiKey(""); setBaseUrl(""); setModelOverride("");
+      setApiKey(""); setBaseUrl("");
       await fetchProviders();
     } catch (err) {
       alert(`Failed to save: ${err.message}`);
@@ -154,9 +188,7 @@ export default function SettingsPage() {
                     <div className="flex items-start justify-between">
                       <div>
                         <h4 className="font-semibold text-zinc-100 text-sm uppercase tracking-wide">{p.id.replace("_", " ")}</h4>
-                        <span className="text-xs text-zinc-500 font-mono mt-0.5 block">
-                          {p.id === "inhouse" ? "IN_HOUSE_MODEL" : "OPENAI_ADAPTER"}
-                        </span>
+                        <span className="text-xs text-zinc-500 font-mono mt-0.5 block">VERTEX_AI_ADAPTER</span>
                       </div>
                       {p.is_active && <CheckCircle2 size={15} className="text-indigo-400" />}
                     </div>
@@ -170,7 +202,6 @@ export default function SettingsPage() {
                             setConfiguringProvider(p);
                             setApiKey("");
                             setBaseUrl(p.base_url || "");
-                            setModelOverride(p.model_override || "");
                           }}
                         >
                           Configure
@@ -182,6 +213,38 @@ export default function SettingsPage() {
                         )}
                       </div>
                     </div>
+
+                    {p.id === "gemini" && (
+                      <div className="pt-3 border-t border-zinc-800/60 space-y-2">
+                        {["QUEUED", "JOB_STATE_QUEUED", "JOB_STATE_PENDING", "JOB_STATE_RUNNING"].includes(p.tuning_status) ? (
+                          <div className="flex items-center gap-2 text-xs text-indigo-300 font-mono">
+                            <Loader2 size={13} className="animate-spin shrink-0" />
+                            <span>Fine-tuning on Vertex AI… ({p.tuning_status})</span>
+                          </div>
+                        ) : p.tuning_result_model ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs text-emerald-400 font-mono break-all">Tuned model ready: {p.tuning_result_model}</p>
+                            <div className="flex items-center gap-1.5">
+                              <Button size="sm" variant="primary" onClick={() => handleUseTunedModel(p.id, p.tuning_result_model)}>
+                                Use as model override
+                              </Button>
+                              <Button size="sm" icon={Sparkles} loading={finetuning === p.id} onClick={() => handleStartFinetune(p.id)}>
+                                Re-tune
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {p.tuning_status === "FAILED" && (
+                              <p className="text-xs text-rose-400 font-mono break-all">Last tuning attempt failed: {p.tuning_error || "unknown error"}</p>
+                            )}
+                            <Button size="sm" icon={Sparkles} loading={finetuning === p.id} onClick={() => handleStartFinetune(p.id)} title="Vertex AI managed supervised fine-tuning — no GPU required (docs/VERTEX_FINETUNING.md)">
+                              Fine-tune on Vertex AI
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </Card>
                 );
               })}
@@ -219,17 +282,12 @@ export default function SettingsPage() {
       >
         {configuringProvider && (
           <form onSubmit={handleSaveProvider} className="space-y-4">
-            <Field label="API token / secret key">
-              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-xxxxxxxxxxxxxxxx" className="font-mono" />
+            <Field label="API key (optional — leave blank to use Application Default Credentials)">
+              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="AIza… (optional)" className="font-mono" />
             </Field>
-            {NEEDS_BASE_URL.includes(configuringProvider.id) && (
-              <Field label="Base gateway URL">
-                <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://your-model-endpoint/v1" className="font-mono" />
-              </Field>
+            {configuringProvider.model_override && (
+              <p className="text-xs text-zinc-500 font-mono break-all">Active model: {configuringProvider.model_override}. Set only via "Fine-tune on Vertex AI" below — not manually editable.</p>
             )}
-            <Field label="Model override name">
-              <Input value={modelOverride} onChange={(e) => setModelOverride(e.target.value)} placeholder="grc-auditor-v1 / llama-3.3-70b-versatile" className="font-mono" />
-            </Field>
             <div className="flex items-center gap-2 text-xs text-zinc-400 bg-zinc-950 p-3 rounded-lg border border-zinc-800">
               <ShieldAlert size={14} className="shrink-0 text-zinc-500" />
               <span>Credentials are vault-encrypted using your environment BYOK key.</span>

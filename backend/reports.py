@@ -75,7 +75,7 @@ def ai_executive_summary(report: dict, org_id: str) -> str:
         prompt = (
             "Write a concise (max 150 words) executive summary of this compliance "
             "gap analysis for a banking GRC audit report. State overall posture and "
-            "the top remediation priorities. Plain prose, no markdown headings.\n\n"
+            "the top priorities. Plain prose, no markdown headings.\n\n"
             + "\n".join(lines)
         )
         return ai_gateway.generate_content(

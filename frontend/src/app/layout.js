@@ -1,6 +1,7 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import { Inter } from "next/font/google";
 import AppShell from "./components/AppShell";
+import { Toaster } from "./components/ui";
 import "./globals.css";
 
 const inter = Inter({
@@ -28,6 +29,7 @@ export default function RootLayout({ children }) {
       <html suppressHydrationWarning lang="en" className={`${inter.variable} h-full antialiased dark`}>
         <body suppressHydrationWarning className="min-h-full bg-[#09090b] font-sans text-zinc-100 flex overflow-hidden">
           <AppShell>{children}</AppShell>
+          <Toaster />
         </body>
       </html>
     </ClerkProvider>

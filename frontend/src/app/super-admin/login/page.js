@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Lock, LogIn, ShieldCheck } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "@/app/lib/api";
 
 export default function SuperAdminLoginPage() {
   const [accessKey, setAccessKey] = useState("");

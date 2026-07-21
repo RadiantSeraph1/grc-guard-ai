@@ -1,0 +1,105 @@
+# Cloud Build configuration for GRC Guard AI
+# Builds backend + frontend images, pushes to Artifact Registry, deploys to GKE
+
+substitutions:
+  _REGION: us-central1
+  _REPO: grc-guard
+  _GKE_CLUSTER: grc-guard-cluster
+  _GKE_ZONE: us-central1
+
+steps:
+  # ── Step 1: Build backend Docker image ──
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-backend'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:localbuild'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:latest'
+      - '-f'
+      - 'backend/Dockerfile'
+      - 'backend/'
+
+  # ── Step 2: Build frontend Docker image ──
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y29ycmVjdC1tYWxsYXJkLTk4LmNsZXJrLmFjY291bnRzLmRldiQ'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:localbuild'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:latest'
+      - '-f'
+      - 'frontend/Dockerfile.prod'
+      - 'frontend/'
+
+  # ── Step 3: Push both images to Artifact Registry ──
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-backend'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend'
+    waitFor:
+      - 'build-backend'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-frontend'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend'
+    waitFor:
+      - 'build-frontend'
+
+  # ── Step 4: Deploy to GKE ──
+  - name: 'gcr.io/cloud-builders/gke-deploy'
+    id: 'deploy-to-gke'
+    args:
+      - 'run'
+      - '--filename=k8s/'
+      - '--recursive'
+      - '--location=${_GKE_ZONE}'
+      - '--cluster=${_GKE_CLUSTER}'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:localbuild'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:localbuild'
+    waitFor:
+      - 'push-backend'
+      - 'push-frontend'
+
+  # ── Step 5: Force both Deployments to pick up the freshly pushed :latest
+  # image. gke-deploy's digest-pinning above is unreliable for grc-backend
+  # (observed repeatedly: it substitutes the frontend image's digest but not
+  # backend's, so `kubectl apply` sees no spec diff and never restarts
+  # backend's pods even though a new image was just pushed to :latest). A
+  # rollout restart is deterministic regardless of that flakiness.
+  - name: 'gcr.io/cloud-builders/kubectl'
+    id: 'restart-rollout'
+    args:
+      - 'rollout'
+      - 'restart'
+      - 'deployment/grc-backend'
+      - 'deployment/grc-frontend'
+      - '-n'
+      - 'grc-guard'
+    env:
+      - 'CLOUDSDK_COMPUTE_REGION=${_GKE_ZONE}'
+      - 'CLOUDSDK_CONTAINER_CLUSTER=${_GKE_CLUSTER}'
+    waitFor:
+      - 'deploy-to-gke'
+
+# ── Images to be stored in Artifact Registry ──
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:localbuild'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/backend:latest'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:localbuild'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/frontend:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: '1200s'

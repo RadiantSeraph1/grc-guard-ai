@@ -1,6 +1,8 @@
 "use client";
 
+import React from "react";
 import { Search as SearchIcon, X } from "lucide-react";
+import { Toaster as SonnerToaster, toast } from 'sonner';
 
 /**
  * Shared UI primitives for GRC Guard AI.
@@ -94,7 +96,7 @@ export function StatCard({ label, value, suffix, icon: Icon, accent = "zinc", de
       <div className="space-y-2 min-w-0">
         <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</span>
         <div className="flex items-baseline gap-1">
-          <span className="text-3xl font-semibold tracking-tight text-zinc-50 tabular-nums">{value}</span>
+          <AnimatedCounter value={value} className="text-3xl font-semibold tracking-tight text-zinc-50 tabular-nums" />
           {suffix && <span className="text-sm text-zinc-500">{suffix}</span>}
         </div>
         {delta && (
@@ -321,5 +323,133 @@ export function ProgressBar({ value = 0, className, tone = "accent" }) {
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
+  );
+}
+
+// ===== TOAST (sonner wrapper) =====
+
+export function Toaster() {
+  return (
+    <SonnerToaster
+      position="top-right"
+      toastOptions={{
+        duration: 4000,
+        className: 'glass-card-static',
+      }}
+      theme="dark"
+      richColors
+      closeButton
+    />
+  );
+}
+
+export { toast };
+
+// ===== ANIMATED COUNTER =====
+export function AnimatedCounter({ value, prefix = '', suffix = '', className = '' }) {
+  const [display, setDisplay] = React.useState(0);
+  
+  React.useEffect(() => {
+    const target = typeof value === 'number' ? value : parseInt(value) || 0;
+    if (target === 0) { setDisplay(0); return; }
+    const duration = 800;
+    const steps = 30;
+    const increment = target / steps;
+    let current = 0;
+    const timer = setInterval(() => {
+      current += increment;
+      if (current >= target) {
+        setDisplay(target);
+        clearInterval(timer);
+      } else {
+        setDisplay(Math.floor(current));
+      }
+    }, duration / steps);
+    return () => clearInterval(timer);
+  }, [value]);
+  
+  return <span className={`animate-count-up ${className}`}>{prefix}{display.toLocaleString()}{suffix}</span>;
+}
+
+// ===== GAUGE CHART =====
+export function GaugeChart({ value = 0, max = 100, size = 120, strokeWidth = 10, label = '', color = '#6366f1' }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const progress = Math.min(value / max, 1);
+  const offset = circumference * (1 - progress);
+  const percentage = Math.round(progress * 100);
+  
+  // Color based on percentage
+  const getColor = () => {
+    if (percentage >= 80) return '#10b981';
+    if (percentage >= 60) return '#f59e0b';
+    if (percentage >= 40) return '#f97316';
+    return '#ef4444';
+  };
+  
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg className="gauge-ring" width={size} height={size}>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="rgba(63, 63, 70, 0.3)"
+            strokeWidth={strokeWidth}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={color === 'auto' ? getColor() : color}
+            strokeWidth={strokeWidth}
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-2xl font-bold text-zinc-100">{percentage}%</span>
+        </div>
+      </div>
+      {label && <span className="text-xs text-zinc-400 font-medium">{label}</span>}
+    </div>
+  );
+}
+
+// ===== TOOLTIP =====
+export function Tooltip({ children, content, position = 'top' }) {
+  const [show, setShow] = React.useState(false);
+  const positions = {
+    top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
+    bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
+    left: 'right-full top-1/2 -translate-y-1/2 mr-2',
+    right: 'left-full top-1/2 -translate-y-1/2 ml-2',
+  };
+  return (
+    <div className="relative inline-flex" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <div className={`absolute ${positions[position]} z-50 px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-xs text-zinc-200 whitespace-nowrap shadow-xl animate-scale-in`}>
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== PROGRESS RING =====
+export function ProgressRing({ value = 0, size = 40, strokeWidth = 3, color = '#6366f1' }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - Math.min(value / 100, 1));
+  return (
+    <svg width={size} height={size} className="gauge-ring">
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke="rgba(63,63,70,0.3)" strokeWidth={strokeWidth} />
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={color} strokeWidth={strokeWidth} strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" />
+    </svg>
   );
 }

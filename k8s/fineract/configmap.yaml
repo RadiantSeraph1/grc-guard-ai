@@ -1,0 +1,95 @@
+# Non-secret config for the in-cluster Apache Fineract demo instance.
+# Ported from the official apache/fineract docker-compose env files
+# (config/docker/env/{fineract,fineract-common,fineract-postgresql,postgresql}.env)
+# with hostnames pointed at the in-cluster postgres service. Passwords live in
+# the gitignored k8s/fineract/secret.yaml instead (see that file's header).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fineract-postgres-init
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: fineract-demo
+data:
+  01-init.sh: |
+    #!/bin/bash
+    set -e
+    export PGPASSWORD=$POSTGRES_PASSWORD;
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+      CREATE USER $FINERACT_DB_USER WITH PASSWORD '$FINERACT_DB_PASS';
+      CREATE DATABASE $FINERACT_TENANTS_DB_NAME;
+      CREATE DATABASE $FINERACT_TENANT_DEFAULT_DB_NAME;
+      GRANT ALL PRIVILEGES ON DATABASE $FINERACT_TENANTS_DB_NAME TO $FINERACT_DB_USER;
+      GRANT ALL PRIVILEGES ON DATABASE $FINERACT_TENANT_DEFAULT_DB_NAME TO $FINERACT_DB_USER;
+      \c $FINERACT_TENANTS_DB_NAME
+      GRANT ALL ON SCHEMA public TO $FINERACT_DB_USER;
+      \c $FINERACT_TENANT_DEFAULT_DB_NAME
+      GRANT ALL ON SCHEMA public TO $FINERACT_DB_USER;
+    EOSQL
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fineract-postgres-config
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: fineract-demo
+data:
+  POSTGRES_USER: "root"
+  POSTGRES_DB: "root"
+  FINERACT_DB_USER: "postgres"
+  FINERACT_TENANTS_DB_NAME: "fineract_tenants"
+  FINERACT_TENANT_DEFAULT_DB_NAME: "fineract_default"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fineract-config
+  namespace: grc-guard
+  labels:
+    app.kubernetes.io/name: grc-guard
+    app.kubernetes.io/component: fineract-demo
+data:
+  FINERACT_NODE_ID: "1"
+  FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME: "org.postgresql.Driver"
+  FINERACT_HIKARI_JDBC_URL: "jdbc:postgresql://fineract-postgres:5432/fineract_tenants"
+  FINERACT_HIKARI_USERNAME: "postgres"
+  FINERACT_HIKARI_MINIMUM_IDLE: "3"
+  FINERACT_HIKARI_MAXIMUM_POOL_SIZE: "10"
+  FINERACT_HIKARI_IDLE_TIMEOUT: "60000"
+  FINERACT_HIKARI_CONNECTION_TIMEOUT: "20000"
+  FINERACT_HIKARI_TEST_QUERY: "SELECT 1"
+  FINERACT_HIKARI_AUTO_COMMIT: "true"
+  FINERACT_SERVER_SSL_ENABLED: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_CACHE_PREP_STMTS: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_PREP_STMT_CACHE_SIZE: "250"
+  FINERACT_HIKARI_DS_PROPERTIES_PREP_STMT_CACHE_SQL_LIMIT: "2048"
+  FINERACT_HIKARI_DS_PROPERTIES_USE_SERVER_PREP_STMTS: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_USE_LOCAL_SESSION_STATE: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_REWRITE_BATCHED_STATEMENTS: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_CACHE_RESULT_SET_METADATA: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_CACHE_SERVER_CONFIGURATION: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_ELIDE_SET_AUTO_COMMITS: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_MAINTAIN_TIME_STATS: "false"
+  FINERACT_HIKARI_DS_PROPERTIES_LOG_SLOW_QUERIES: "true"
+  FINERACT_HIKARI_DS_PROPERTIES_DUMP_QUERIES_IN_EXCEPTION: "true"
+  FINERACT_DEFAULT_TENANTDB_CONN_PARAMS: ""
+  FINERACT_DEFAULT_TENANTDB_TIMEZONE: "Africa/Accra"
+  FINERACT_DEFAULT_TENANTDB_IDENTIFIER: "default"
+  FINERACT_DEFAULT_TENANTDB_NAME: "fineract_default"
+  FINERACT_DEFAULT_TENANTDB_DESCRIPTION: "Default Demo Tenant"
+  FINERACT_DEFAULT_TENANTDB_HOSTNAME: "fineract-postgres"
+  FINERACT_DEFAULT_TENANTDB_PORT: "5432"
+  FINERACT_DEFAULT_TENANTDB_UID: "postgres"
+  FINERACT_MANAGEMENT_ENDPOINT_WEB_EXPOSURE_INCLUDE: "health,info,prometheus"
+  FINERACT_MANAGEMENT_METRICS_TAGS_APPLICATION: "fineract"
+  FINERACT_REMOTE_JOB_MESSAGE_HANDLER_SPRING_EVENTS_ENABLED: "true"
+  FINERACT_INSECURE_HTTP_CLIENT: "true"
+  FINERACT_CONTENT_FILESYSTEM_ROOT_FOLDER: "/tmp"
+  SPRING_PROFILES_ACTIVE: "test,diagnostics"
+  # ponytail: dropped the upstream JDWP remote-debug agent (address=*:5000) — a
+  # demo instance shouldn't expose an open debugger port. Re-add only if
+  # step-debugging Fineract itself is ever needed.
+  JAVA_TOOL_OPTIONS: "-Xmx1G -XX:MinRAMPercentage=25 -XX:MaxRAMPercentage=80 -XX:TieredStopAtLevel=1 -XX:+UseContainerSupport -XX:+UseStringDeduplication"

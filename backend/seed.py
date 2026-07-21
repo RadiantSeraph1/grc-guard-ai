@@ -28,23 +28,50 @@ def run_light_migrations():
     """
     try:
         inspector = inspect(engine)
-        if "integrations" not in inspector.get_table_names():
-            return
-        cols = {c["name"] for c in inspector.get_columns("integrations")}
-        if "last_audit_summary" not in cols:
+        tables = inspector.get_table_names()
+
+        if "integrations" in tables:
+            cols = {c["name"] for c in inspector.get_columns("integrations")}
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_summary VARCHAR"))
+                if "last_audit_summary" not in cols:
+                    conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_summary VARCHAR"))
+                if "last_audit_checks" not in cols:
+                    conn.execute(text("ALTER TABLE integrations ADD COLUMN last_audit_checks JSON"))
+
+        if "vector_chunks" in tables:
+            cols = {c["name"] for c in inspector.get_columns("vector_chunks")}
+            with engine.begin() as conn:
+                if "regulatory_version" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN regulatory_version VARCHAR"))
+                if "pii_redaction_count" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN pii_redaction_count INTEGER"))
+                if "effective_date" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN effective_date VARCHAR"))
+                if "expiration_date" not in cols:
+                    conn.execute(text("ALTER TABLE vector_chunks ADD COLUMN expiration_date VARCHAR"))
+
+        if "ai_provider_configs" in tables:
+            cols = {c["name"] for c in inspector.get_columns("ai_provider_configs")}
+            with engine.begin() as conn:
+                if "tuning_status" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_status VARCHAR"))
+                if "tuning_job_name" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_job_name VARCHAR"))
+                if "tuning_result_model" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_result_model VARCHAR"))
+                if "tuning_error" not in cols:
+                    conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_error VARCHAR"))
     except Exception as e:
         print(f"Light migration skipped: {e}")
 
 DEFAULT_COMPANY_ID = "bank_enterprise"
 DEFAULT_COMPANY_NAME = "Your Organization"
 
-# AI provider catalog: the in-house trained GRC model and Groq (interim, for
-# testing). The active provider is resolved at request time in ai_gateway (Groq is
-# auto-activated while a GROQ_API_KEY is present). When neither is usable, AI
-# features return an explicit "no model available" notice.
-AI_PROVIDER_CATALOG = ["inhouse", "groq"]
+# AI provider catalog: Vertex AI (Gemini) only, authenticated via Application
+# Default Credentials - no API key needed. The active provider is resolved at
+# request time in ai_gateway (gemini auto-activates once usable). When it's
+# not usable, AI features return an explicit "no model available" notice.
+AI_PROVIDER_CATALOG = ["gemini"]
 
 
 def ensure_ai_providers(db: Session, org_id: str):

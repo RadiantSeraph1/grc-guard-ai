@@ -191,3 +191,202 @@ body {
     gap: 0.75rem;
   }
 }
+
+/* ===== ENHANCED ANIMATIONS ===== */
+@keyframes ui-slide-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ui-scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ui-pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.6), 0 0 40px rgba(99, 102, 241, 0.2); }
+}
+
+@keyframes ui-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes ui-count-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ui-border-glow {
+  0%, 100% { border-color: rgba(99, 102, 241, 0.2); }
+  50% { border-color: rgba(99, 102, 241, 0.5); }
+}
+
+@keyframes ui-float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+.animate-slide-up { animation: ui-slide-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-scale-in { animation: ui-scale-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-pulse-glow { animation: ui-pulse-glow 2s ease-in-out infinite; }
+.animate-gradient-shift { 
+  background-size: 200% 200%; 
+  animation: ui-gradient-shift 3s ease infinite; 
+}
+.animate-count-up { animation: ui-count-up 0.6s cubic-bezier(0.4, 0, 0.2, 1) both; }
+.animate-border-glow { animation: ui-border-glow 2s ease-in-out infinite; }
+.animate-float { animation: ui-float 3s ease-in-out infinite; }
+
+/* Staggered children animations */
+.stagger-children > * { animation: ui-slide-up 0.4s cubic-bezier(0.4, 0, 0.2, 1) both; }
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+.stagger-children > *:nth-child(7) { animation-delay: 300ms; }
+.stagger-children > *:nth-child(8) { animation-delay: 350ms; }
+
+/* ===== ENHANCED GLASSMORPHISM ===== */
+.glass-card {
+  background: linear-gradient(135deg, rgba(24, 24, 27, 0.8), rgba(39, 39, 42, 0.4));
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid rgba(63, 63, 70, 0.5);
+  border-radius: 16px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass-card:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(99, 102, 241, 0.1);
+  transform: translateY(-2px);
+}
+
+.glass-card-static {
+  background: linear-gradient(135deg, rgba(24, 24, 27, 0.8), rgba(39, 39, 42, 0.4));
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  border: 1px solid rgba(63, 63, 70, 0.5);
+  border-radius: 16px;
+}
+
+/* ===== PREMIUM GRADIENTS ===== */
+.gradient-indigo { background: linear-gradient(135deg, #4f46e5, #7c3aed); }
+.gradient-emerald { background: linear-gradient(135deg, #059669, #10b981); }
+.gradient-amber { background: linear-gradient(135deg, #d97706, #f59e0b); }
+.gradient-rose { background: linear-gradient(135deg, #e11d48, #f43f5e); }
+.gradient-sky { background: linear-gradient(135deg, #0284c7, #38bdf8); }
+.gradient-purple { background: linear-gradient(135deg, #7c3aed, #a855f7); }
+
+.gradient-mesh {
+  background: 
+    radial-gradient(at 20% 80%, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+    radial-gradient(at 80% 20%, rgba(168, 85, 247, 0.1) 0%, transparent 50%),
+    radial-gradient(at 50% 50%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
+}
+
+/* ===== CHART CONTAINERS ===== */
+.chart-container {
+  background: rgba(24, 24, 27, 0.5);
+  border: 1px solid rgba(63, 63, 70, 0.3);
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.chart-container .recharts-cartesian-grid-horizontal line,
+.chart-container .recharts-cartesian-grid-vertical line {
+  stroke: rgba(63, 63, 70, 0.3);
+}
+
+.chart-container .recharts-text {
+  fill: #a1a1aa;
+  font-size: 11px;
+}
+
+.chart-container .recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: rgba(24, 24, 27, 0.95) !important;
+  border: 1px solid rgba(63, 63, 70, 0.5) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* ===== GAUGE / PROGRESS RING ===== */
+.gauge-ring {
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+}
+
+.gauge-ring circle {
+  transition: stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== PREMIUM TABLE ===== */
+.premium-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.premium-table thead th {
+  background: rgba(24, 24, 27, 0.8);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.5);
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #a1a1aa;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s;
+}
+
+.premium-table thead th:hover {
+  color: #e4e4e7;
+}
+
+.premium-table tbody tr {
+  transition: background 0.15s;
+}
+
+.premium-table tbody tr:hover {
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.premium-table tbody td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(63, 63, 70, 0.2);
+  font-size: 0.875rem;
+  color: #d4d4d8;
+}
+
+/* ===== NOTIFICATION TOAST OVERRIDES ===== */
+[data-sonner-toaster] {
+  --normal-bg: rgba(24, 24, 27, 0.95) !important;
+  --normal-border: rgba(63, 63, 70, 0.5) !important;
+  --normal-text: #e4e4e7 !important;
+  --success-bg: rgba(5, 150, 105, 0.15) !important;
+  --success-border: rgba(16, 185, 129, 0.3) !important;
+  --success-text: #6ee7b7 !important;
+  --error-bg: rgba(225, 29, 72, 0.15) !important;
+  --error-border: rgba(244, 63, 94, 0.3) !important;
+  --error-text: #fda4af !important;
+  --warning-bg: rgba(217, 119, 6, 0.15) !important;
+  --warning-border: rgba(245, 158, 11, 0.3) !important;
+  --warning-text: #fcd34d !important;
+}
+
+[data-sonner-toast] {
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+}

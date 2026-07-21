@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { UserButton, SignOutButton, useAuth } from "@clerk/nextjs";
 import {
   LayoutDashboard, ShieldCheck, FileText, AlertTriangle,
-  Users, FolderKanban, ShieldAlert, Library, Database,
-  Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight,
-  Activity, Radio, Link2, LogOut, Layers, ClipboardList, Bell, FileBarChart
+  Users, ShieldAlert, Library, Fingerprint,
+  Scale, FileCode, Cpu, Settings, ChevronLeft, ChevronRight, ChevronDown,
+  Activity, Radio, Link2, LogOut, Layers, Bell, FileBarChart, Brain, Wrench
 } from "lucide-react";
 import { API_BASE_URL } from "../lib/api";
 
@@ -20,6 +20,7 @@ export default function Sidebar() {
   const [isHovered, setIsHovered] = useState(false);
   const [apiStatus, setApiStatus] = useState("checking");
   const [unreadCount, setUnreadCount] = useState(0);
+  const [moreExpanded, setMoreExpanded] = useState(false);
 
   // Check API health status
   useEffect(() => {
@@ -51,42 +52,34 @@ export default function Sidebar() {
       } catch { /* ignore */ }
     };
     fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
+    const interval = setInterval(fetchUnread, 120000);
     return () => { active = false; clearInterval(interval); };
   }, [getToken, pathname]);
 
-  const navItems = [
+  // Core nav mirrors the report's actual scope (domain-adapted LLM + XAI +
+  // policy-compliant API on Basel III/CBEST). Generic enterprise-GRC features
+  // with no tie to the paper (vendor/TPRM, asset inventory, HR directory) are
+  // intentionally left off — their routes/pages still exist, just unlinked.
+  const navItems = useMemo(() => [
     { category: "OVERVIEW", items: [
-      { name: "Dashboard", href: "/", icon: LayoutDashboard },
-      { name: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount }
+      { name: "Dashboard", href: "/", icon: LayoutDashboard }
     ]},
-    { category: "GOVERNANCE", items: [
-      { name: "Controls Monitor", href: "/controls", icon: ShieldCheck },
+    { category: "GOVERNANCE & RISK", items: [
       { name: "Frameworks Library", href: "/frameworks", icon: Layers },
-      { name: "Remediation Tasks", href: "/tasks", icon: ClipboardList },
-      { name: "Policies Manager", href: "/policies", icon: FileText }
+      { name: "Policies Manager", href: "/policies", icon: FileText },
+      { name: "Risk Assessment", href: "/risks", icon: AlertTriangle }
     ]},
-    { category: "RISK & VENDORS", items: [
-      { name: "Risk Register", href: "/risks", icon: AlertTriangle },
-      { name: "Vendor Risk (TPRM)", href: "/vendors", icon: FolderKanban }
-    ]},
-    { category: "COMPLIANCE & EVIDENCE", items: [
-      { name: "Integrations Center", href: "/integrations", icon: Link2 },
+    { category: "AI & COMPLIANCE", items: [
       { name: "AI Scanner & RAG", href: "/scanner", icon: ShieldAlert },
-      { name: "Evidence Library", href: "/evidence", icon: Library }
-    ]},
-    { category: "OPERATIONS", items: [
-      { name: "Asset Inventory", href: "/assets", icon: Database },
-      { name: "People Directory", href: "/people", icon: Users }
-    ]},
-    { category: "AUDIT & TRUST", items: [
-      { name: "Auditor Portal", href: "/audit", icon: Scale },
-      { name: "Compliance Reports", href: "/reports", icon: FileBarChart },
-      { name: "Trust Center", href: "/trust", icon: FileCode }
+      { name: "GRC AI Brain", href: "/brain", icon: Brain },
+      { name: "Mechanic Queue", href: "/mechanic", icon: Wrench },
+      { name: "Integrations Center", href: "/integrations", icon: Link2 }
     ]},
     { category: "ANALYSIS", items: [
-      { name: "AI Agents Center", href: "/ai", icon: Cpu },
       { name: "Benchmark Evaluation", href: "/evaluation", icon: Activity }
+    ]},
+    { category: "SECURITY", items: [
+      { name: "Attestation Status", href: "/attestation", icon: Fingerprint }
     ]},
     { category: "PROJECT CLOSURE", items: [
       { name: "Implementation Report", href: "/implementation", icon: FileCode }
@@ -95,7 +88,18 @@ export default function Sidebar() {
       { name: "Settings", href: "/settings", icon: Settings },
       { name: "My Profile & Team", href: "/profile", icon: Users }
     ]}
-  ];
+  ], []);
+
+  // Demoted, not deleted: generic GRC-suite features (audit trail, reports,
+  // evidence, controls dashboard, notifications) with only a thin tie to the
+  // report — still reachable, just collapsed behind "More" by default.
+  const moreNavItems = useMemo(() => [
+    { name: "Controls Monitor", href: "/controls", icon: ShieldCheck },
+    { name: "Auditor Portal", href: "/audit", icon: Scale },
+    { name: "Compliance Reports", href: "/reports", icon: FileBarChart },
+    { name: "Evidence Library", href: "/evidence", icon: Library },
+    { name: "Notifications", href: "/notifications", icon: Bell, badge: unreadCount }
+  ], [unreadCount]);
 
   const isExpanded = !isCollapsed || isHovered;
 
@@ -103,7 +107,6 @@ export default function Sidebar() {
     { name: "Home", href: "/", icon: LayoutDashboard },
     { name: "Controls", href: "/controls", icon: ShieldCheck },
     { name: "Risks", href: "/risks", icon: AlertTriangle },
-    { name: "AI", href: "/ai", icon: Cpu },
     { name: "Settings", href: "/settings", icon: Settings }
   ];
 
@@ -190,6 +193,48 @@ export default function Sidebar() {
               })}
             </div>
           ))}
+
+          {/* Demoted items: reachable, but collapsed by default so the
+              primary nav reflects the report's actual scope. */}
+          <div className="space-y-0.5 pt-1">
+            <button
+              onClick={() => setMoreExpanded((v) => !v)}
+              className="w-full flex items-center space-x-2.5 px-3 py-1.5 rounded-lg text-xs text-zinc-500 hover:bg-zinc-900/60 hover:text-zinc-300 transition-all duration-150"
+            >
+              <span className="relative">
+                <ChevronDown size={14} className={`transition-transform ${moreExpanded ? "rotate-180" : ""}`} />
+              </span>
+              {isExpanded && <span className="truncate flex-1 text-left">{moreExpanded ? "Less" : "More"}</span>}
+            </button>
+            {moreExpanded && moreNavItems.map((item, itemIdx) => {
+              const Icon = item.icon;
+              const isActive = pathname === item.href;
+              return (
+                <Link
+                  key={itemIdx}
+                  href={item.href}
+                  className={`relative flex items-center space-x-2.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-150 ${
+                    isActive
+                      ? "bg-zinc-800/80 text-zinc-100 font-medium"
+                      : "hover:bg-zinc-900/60 hover:text-zinc-200"
+                  }`}
+                >
+                  <span className="relative">
+                    <Icon size={14} className={isActive ? "text-zinc-150" : "text-zinc-500"} />
+                    {item.badge > 0 && !isExpanded && (
+                      <span className="absolute -top-1.5 -right-1.5 w-1.5 h-1.5 rounded-full bg-rose-500" />
+                    )}
+                  </span>
+                  {isExpanded && <span className="truncate flex-1">{item.name}</span>}
+                  {isExpanded && item.badge > 0 && (
+                    <span className="text-[9px] font-bold bg-rose-500 text-white rounded-full px-1.5 py-0.5 min-w-[16px] text-center">
+                      {item.badge > 99 ? "99+" : item.badge}
+                    </span>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
         </div>
 
         {/* Footer / Auth */}

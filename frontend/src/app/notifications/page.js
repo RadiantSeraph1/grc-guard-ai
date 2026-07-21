@@ -7,7 +7,7 @@ import {
   Bell, AlertTriangle, AlertOctagon, Info, CheckCheck, RotateCw, Check
 } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/backend";
+import { API_BASE_URL } from "@/app/lib/api";
 
 const sevIcon = (sev) => {
   if (sev === "critical") return <AlertOctagon size={15} className="text-rose-400" />;
@@ -81,7 +81,7 @@ export default function NotificationsPage() {
             Notifications
             {unread > 0 && <span className="text-[10px] bg-rose-500 text-white rounded-full px-2 py-0.5">{unread}</span>}
           </h1>
-          <p className="text-xs text-zinc-500 mt-1">Alerts from continuous monitoring: control drift and overdue remediation tasks.</p>
+          <p className="text-xs text-zinc-500 mt-1">Alerts from continuous monitoring and control drift.</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={load} className="flex items-center gap-1.5 text-xs bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-zinc-300 px-3 py-1.5 rounded-lg transition-colors"><RotateCw size={12} /> Refresh</button>
