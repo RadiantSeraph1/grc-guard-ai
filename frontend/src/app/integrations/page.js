@@ -6,8 +6,8 @@ import {
 } from "lucide-react";
 import { useApi, ApiError } from "../lib/api";
 import {
-  PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState,
-  Modal, Field, Input, Textarea, cn,
+  PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState, ErrorState,
+  Modal, Field, Input, Textarea, cn, toast,
 } from "../components/ui";
 
 // Per-connector presentation + credential hints. Connectors themselves come from
@@ -40,17 +40,20 @@ export default function IntegrationsPage() {
   const [fieldsMap, setFieldsMap] = useState({});
   const [connecting, setConnecting] = useState(false);
   const [syncingId, setSyncingId] = useState(null);
+  const [loadError, setLoadError] = useState(false);
 
   const fetchIntegrations = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await api.get("/api/integrations");
       setIntegrations(Array.isArray(data) ? data : []);
+      setLoadError(false);
       try {
         const spec = await api.get("/api/integrations/fields");
         setFieldsMap(spec.fields || {});
       } catch { /* form falls back to a generic token field */ }
     } catch {
-      setIntegrations([]);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -69,12 +72,12 @@ export default function IntegrationsPage() {
       const v = (credValues[f.key] || "").trim();
       if (v) payload[f.key] = v;
       else if (f.required !== false) {
-        alert(`"${f.label}" is required.`);
+        toast.error(`"${f.label}" is required.`);
         return;
       }
     }
     if (Object.keys(payload).length === 0) {
-      alert("Enter real read-only credentials before connecting this system.");
+      toast.error("Enter real read-only credentials before connecting this system.");
       return;
     }
 
@@ -85,7 +88,7 @@ export default function IntegrationsPage() {
       setCredValues({});
       await fetchIntegrations();
     } catch (err) {
-      alert(`Failed to connect integration: ${err instanceof ApiError ? err.message : err}`);
+      toast.error(`Failed to connect integration: ${err instanceof ApiError ? err.message : err}`);
     } finally {
       setConnecting(false);
     }
@@ -147,12 +150,14 @@ export default function IntegrationsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44 w-full" />)}
         </div>
+      ) : loadError ? (
+        <Card><ErrorState title="Couldn't load the connector catalog" onRetry={fetchIntegrations} /></Card>
       ) : filtered.length === 0 ? (
         <Card>
           <EmptyState
             icon={Plug}
-            title={integrations.length === 0 ? "Connector catalog unavailable" : "No connectors in this category"}
-            description={integrations.length === 0 ? "The backend catalog could not be loaded." : "Pick another category tab above."}
+            title="No connectors in this category"
+            description="Pick another category tab above."
           />
         </Card>
       ) : (

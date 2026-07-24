@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Wrench, Check, X, Clock } from "lucide-react";
 import { useApi } from "../lib/api";
-import { PageContainer, PageHeader, Card, Button, Badge, Skeleton, EmptyState } from "../components/ui";
+import { PageContainer, PageHeader, Card, Button, Badge, Skeleton, EmptyState, ErrorState, toast } from "../components/ui";
 
 const STATUS_TONE = { PROPOSED: "warning", APPLIED: "success", REJECTED: "danger" };
 
@@ -11,14 +11,16 @@ export default function MechanicPage() {
   const api = useApi();
   const [actions, setActions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [deciding, setDeciding] = useState(null);
 
   const fetchQueue = useCallback(async () => {
     setLoading(true);
     try {
       setActions(await api.get("/api/mechanic/queue"));
+      setLoadError(false);
     } catch {
-      setActions([]);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -32,7 +34,7 @@ export default function MechanicPage() {
       await api.post(`/api/mechanic/${id}/${action}`);
       await fetchQueue();
     } catch (err) {
-      alert(err.message || `Failed to ${action} this action.`);
+      toast.error(err.message || `Failed to ${action} this action.`);
     } finally {
       setDeciding(null);
     }
@@ -53,6 +55,8 @@ export default function MechanicPage() {
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-20 w-full" />)}
         </div>
+      ) : loadError ? (
+        <Card><ErrorState onRetry={fetchQueue} /></Card>
       ) : actions.length === 0 ? (
         <Card>
           <EmptyState icon={Wrench} title="No remediation proposals yet" description="Ask the GRC Brain to fix or remediate a specific control/risk and its Mechanic agent will propose a change here." />

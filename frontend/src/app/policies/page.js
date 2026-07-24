@@ -5,7 +5,7 @@ import { FileText, Upload, Users, Plus, ShieldAlert, Award, ClipboardCheck } fro
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState,
-  Modal, Field, Input, ProgressBar, statusVariant,
+  Modal, Field, Input, ProgressBar, statusVariant, toast,
 } from "../components/ui";
 
 export default function PoliciesPage() {
@@ -60,7 +60,7 @@ export default function PoliciesPage() {
       resetForm();
       await fetchPolicies();
     } catch (err) {
-      alert(`Upload failed: ${err.message}`);
+      toast.error(`Upload failed: ${err.message}`);
     } finally {
       setUploading(false);
     }
@@ -72,7 +72,7 @@ export default function PoliciesPage() {
       await api.post(`/api/policies/${id}/approve`);
       await fetchPolicies();
     } catch (err) {
-      alert(`Approve failed: ${err.message}`);
+      toast.error(`Approve failed: ${err.message}`);
     } finally {
       setBusyId(null);
     }
@@ -84,7 +84,7 @@ export default function PoliciesPage() {
       await api.post(`/api/policies/${id}/acknowledge`);
       await fetchPolicies();
     } catch (err) {
-      alert(`Acknowledge failed: ${err.message}`);
+      toast.error(`Acknowledge failed: ${err.message}`);
     } finally {
       setBusyId(null);
     }

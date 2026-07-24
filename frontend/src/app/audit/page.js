@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Download, MessageSquare, Send, HelpCircle, ArrowDownToLine, Clock, User } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
-  PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState, Input, cn,
+  PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState, Input, cn, toast,
 } from "../components/ui";
 
 const VIEW_MODES = [
@@ -61,7 +61,7 @@ export default function AuditPage() {
       setNewComment("");
       await fetchComments(activeControl.id);
     } catch (err) {
-      alert(`Could not post comment: ${err.message}`);
+      toast.error(`Could not post comment: ${err.message}`);
     } finally {
       setSubmitting(false);
     }
@@ -70,9 +70,9 @@ export default function AuditPage() {
   const handleDownloadBundle = async () => {
     try {
       const data = await api.get("/api/audit/bundle");
-      alert(`Audit bundle generated: ${data.bundle_id}.`);
+      toast.success(`Audit bundle generated: ${data.bundle_id}.`);
     } catch {
-      alert("Failed to generate bundle. Backend is offline.");
+      toast.error("Failed to generate bundle. Backend is offline.");
     }
   };
 
@@ -152,7 +152,7 @@ export default function AuditPage() {
                 <h3 className="text-sm font-semibold text-zinc-100">[{activeControl.control_code}] {activeControl.title}</h3>
                 <p className="text-xs text-zinc-500 mt-0.5">Collaborative audit thread for compliance checks.</p>
               </div>
-              <Button size="sm" icon={ArrowDownToLine} onClick={() => alert(`Fetching evidence for ${activeControl.control_code}…`)}>
+              <Button size="sm" icon={ArrowDownToLine} onClick={() => toast.info(`Fetching evidence for ${activeControl.control_code}…`)}>
                 Evidence
               </Button>
             </div>

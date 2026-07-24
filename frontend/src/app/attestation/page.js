@@ -3,19 +3,22 @@
 import { useEffect, useState, useCallback } from "react";
 import { ShieldCheck, ShieldAlert, RotateCw, Fingerprint, Cpu, AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import { useApi } from "../lib/api";
-import { PageContainer, PageHeader, Card, Button, Badge, Skeleton, EmptyState, cn } from "../components/ui";
+import { PageContainer, PageHeader, Card, Button, Badge, Skeleton, EmptyState, ErrorState, cn } from "../components/ui";
 
 export default function AttestationPage() {
   const api = useApi();
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     setLoading(true);
     try {
       setReport(await api.get("/api/security/attestation-status"));
+      setLoadError(false);
     } catch {
       setReport(null);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -42,6 +45,8 @@ export default function AttestationPage() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 w-full" />)}
         </div>
+      ) : loadError ? (
+        <Card><ErrorState title="Couldn't reach the attestation service" onRetry={fetchStatus} /></Card>
       ) : !report || report.provider === "none" ? (
         <Card>
           <EmptyState

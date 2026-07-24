@@ -6,7 +6,7 @@ import { Search, UserPlus, Trash2, Shield, Building, Users } from "lucide-react"
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, CardHeader, Badge, Button, Skeleton, EmptyState,
-  Modal, Field, Input, Select, SearchInput, cn,
+  Modal, Field, Input, Select, SearchInput, cn, toast,
 } from "../components/ui";
 
 export default function ProfilePage() {
@@ -77,7 +77,7 @@ export default function ProfilePage() {
       setNewTraining(false); setNewBackground(false);
       await fetchPeople();
     } catch (err) {
-      alert(err.message || "Failed to create user.");
+      toast.error(err.message || "Failed to create user.");
     } finally {
       setSubmitting(false);
     }
@@ -85,7 +85,7 @@ export default function ProfilePage() {
 
   const handleDeleteUser = async (id) => {
     if (id === userId) {
-      alert("You cannot delete your own active session account.");
+      toast.error("You cannot delete your own active session account.");
       return;
     }
     if (!confirm("Remove this user from the organization?")) return;
@@ -93,7 +93,7 @@ export default function ProfilePage() {
       await api.del(`/api/people/${id}`);
       await fetchPeople();
     } catch (err) {
-      alert(`Failed to remove user: ${err.message}`);
+      toast.error(`Failed to remove user: ${err.message}`);
     }
   };
 

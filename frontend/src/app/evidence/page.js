@@ -7,7 +7,7 @@ import {
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState,
-  Modal, Field, Input, Select, SearchInput, statusVariant,
+  Modal, Field, Input, Select, SearchInput, statusVariant, toast,
 } from "../components/ui";
 
 export default function EvidencePage() {
@@ -59,7 +59,7 @@ export default function EvidencePage() {
       await fetchData();
       resetForm();
     } catch (err) {
-      alert(`Upload failed: ${err.message}. Ensure you have an Admin/Editor role.`);
+      toast.error(`Upload failed: ${err.message}. Ensure you have an Admin/Editor role.`);
     } finally {
       setUploading(false);
     }
@@ -69,7 +69,7 @@ export default function EvidencePage() {
     try {
       const response = await api.raw("GET", `/api/evidence/${item.id}/download`);
       if (!response.ok) {
-        alert("Could not download this evidence file.");
+        toast.error("Could not download this evidence file.");
         return;
       }
       const blob = await response.blob();
@@ -77,7 +77,7 @@ export default function EvidencePage() {
       window.open(url, "_blank");
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch {
-      alert("Could not download this evidence file.");
+      toast.error("Could not download this evidence file.");
     }
   };
 

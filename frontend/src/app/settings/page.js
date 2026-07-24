@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Cpu, Key, CheckCircle2, X, Check, ShieldAlert, AlertTriangle, Sparkles, Loader2 } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
-  PageContainer, PageHeader, Card, Badge, Button, Skeleton, Modal, Field, Input, cn,
+  PageContainer, PageHeader, Card, Badge, Button, Skeleton, Modal, Field, Input, cn, toast,
 } from "../components/ui";
 
 const PROVIDER_DESC = {
@@ -99,7 +99,7 @@ export default function SettingsPage() {
       setApiKey(""); setBaseUrl("");
       await fetchProviders();
     } catch (err) {
-      alert(`Failed to save: ${err.message}`);
+      toast.error(`Failed to save: ${err.message}`);
     } finally {
       setSaving(false);
     }

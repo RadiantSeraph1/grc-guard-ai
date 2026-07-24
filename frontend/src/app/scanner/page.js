@@ -5,7 +5,7 @@ import { RotateCw, HelpCircle, Eye, ShieldAlert, Cpu, Clipboard, ThumbsUp, Thumb
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button,
-  Field, Input, Textarea, Select, cn,
+  Field, Input, Textarea, Select, cn, toast,
 } from "../components/ui";
 
 export default function ScannerPage() {
@@ -73,7 +73,7 @@ export default function ScannerPage() {
       setActiveLogId(data.id);
       fetchHistory();
     } catch {
-      alert("Failed to scan. Backend offline.");
+      toast.error("Failed to scan. Backend offline.");
     } finally {
       setScanning(false);
     }

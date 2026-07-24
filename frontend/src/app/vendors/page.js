@@ -5,7 +5,7 @@ import { Cpu, ShieldCheck, Eye, FolderKanban } from "lucide-react";
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button, Skeleton, EmptyState,
-  Modal, SearchInput, cn,
+  Modal, SearchInput, cn, toast,
 } from "../components/ui";
 
 const tierVariant = (tier) => {
@@ -47,7 +47,7 @@ export default function VendorsPage() {
         setSelectedAnswers({ vendorId: id, answers: data.answers });
       }
     } catch (err) {
-      alert(`Auto-fill failed: ${err.message}`);
+      toast.error(`Auto-fill failed: ${err.message}`);
     } finally {
       setFillingId(null);
     }

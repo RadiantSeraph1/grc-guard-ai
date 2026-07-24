@@ -1,7 +1,7 @@
 "use client";
 
-import React from "react";
-import { Search as SearchIcon, X } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Search as SearchIcon, X, AlertTriangle, RotateCw, WifiOff } from "lucide-react";
 import { Toaster as SonnerToaster, toast } from 'sonner';
 
 /**
@@ -15,6 +15,39 @@ import { Toaster as SonnerToaster, toast } from 'sonner';
 /** Tiny classnames joiner (no dependency needed). */
 export function cn(...parts) {
   return parts.filter(Boolean).join(" ");
+}
+
+/* ── Connectivity ───────────────────────────────────────────────────── */
+
+/** True/false browser online state, live-updated via the online/offline events. */
+export function useOnlineStatus() {
+  // navigator.onLine is undefined during SSR - default true so the banner
+  // never flashes on first paint, only once the browser actually reports offline.
+  const [online, setOnline] = useState(true);
+  useEffect(() => {
+    setOnline(navigator.onLine);
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+  return online;
+}
+
+/** App-wide "you're offline" banner - mounted once in AppShell, not per-page. */
+export function OfflineBanner() {
+  const online = useOnlineStatus();
+  if (online) return null;
+  return (
+    <div className="flex items-center justify-center gap-2 bg-rose-500/10 border-b border-rose-500/20 text-rose-300 text-xs font-medium py-2 px-4 shrink-0">
+      <WifiOff size={13} />
+      You&apos;re offline — changes won&apos;t save until your connection is back.
+    </div>
+  );
 }
 
 /* ── Layout ─────────────────────────────────────────────────────────── */
@@ -214,11 +247,14 @@ export function StatCardSkeleton() {
 
 /* ── Empty state ────────────────────────────────────────────────────── */
 
-export function EmptyState({ icon: Icon, title, description, action, className }) {
+export function EmptyState({ icon: Icon, title, description, action, className, tone = "neutral" }) {
+  const iconTone = tone === "danger"
+    ? "bg-rose-500/10 border-rose-500/20 text-rose-400"
+    : "bg-zinc-800/50 border-zinc-700/50 text-zinc-500";
   return (
     <div className={cn("flex flex-col items-center justify-center text-center py-12 px-4", className)}>
       {Icon && (
-        <div className="w-11 h-11 rounded-xl bg-zinc-800/50 border border-zinc-700/50 flex items-center justify-center text-zinc-500 mb-3">
+        <div className={cn("w-11 h-11 rounded-xl border flex items-center justify-center mb-3", iconTone)}>
           <Icon size={20} />
         </div>
       )}
@@ -226,6 +262,23 @@ export function EmptyState({ icon: Icon, title, description, action, className }
       {description && <p className="text-xs text-zinc-500 mt-1 max-w-xs">{description}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
+  );
+}
+
+/** Renders EmptyState in "couldn't load" framing with a Retry action, distinct
+ * from a genuinely empty result set (e.g. "no data" vs "the request failed"). */
+export function ErrorState({ title = "Couldn't load this", description, onRetry, className }) {
+  return (
+    <EmptyState
+      icon={AlertTriangle}
+      tone="danger"
+      title={title}
+      description={description || "Check your connection and try again."}
+      action={onRetry && (
+        <Button size="sm" icon={RotateCw} onClick={onRetry}>Retry</Button>
+      )}
+      className={className}
+    />
   );
 }
 
