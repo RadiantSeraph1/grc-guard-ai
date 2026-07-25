@@ -262,7 +262,7 @@ export default function DashboardPage() {
                       <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center text-sm font-bold text-indigo-300 border border-indigo-500/30 shrink-0 shadow-[0_0_15px_rgba(99,102,241,0.15)]">
                         {(int.name || int.id || "?").slice(0, 2).toUpperCase()}
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 min-h-[3.625rem] flex flex-col justify-center">
                         <h4 className="text-[15px] font-semibold text-zinc-100 leading-snug">{int.name}</h4>
                         <span className="text-xs text-zinc-400">{int.category}</span>
                       </div>
