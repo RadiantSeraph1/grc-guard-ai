@@ -263,11 +263,11 @@ export default function DashboardPage() {
                         {(int.name || int.id || "?").slice(0, 2).toUpperCase()}
                       </div>
                       <div className="min-w-0">
-                        <h4 className="text-[15px] font-semibold text-zinc-100 truncate">{int.name}</h4>
+                        <h4 className="text-[15px] font-semibold text-zinc-100 leading-snug">{int.name}</h4>
                         <span className="text-xs text-zinc-400">{int.category}</span>
                       </div>
                     </div>
-                    <Badge variant={statusVariant(int.status)} className="px-2.5 py-1 text-xs">{int.status}</Badge>
+                    <Badge variant={statusVariant(int.status)} className="px-2.5 py-1 text-xs shrink-0">{int.status}</Badge>
                   </div>
                 ))}
               </div>
