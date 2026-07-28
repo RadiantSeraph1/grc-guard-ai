@@ -5,7 +5,7 @@ import { RotateCw, HelpCircle, Eye, ShieldAlert, Cpu, Clipboard, ThumbsUp, Thumb
 import { useApi } from "../lib/api";
 import {
   PageContainer, PageHeader, Card, Badge, Button,
-  Field, Input, Textarea, Select, cn, toast,
+  Field, Input, Textarea, Select, cn, toast, StarRating,
 } from "../components/ui";
 
 export default function ScannerPage() {
@@ -16,6 +16,7 @@ export default function ScannerPage() {
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null);
   const [feedbackSent, setFeedbackSent] = useState(null); // "up" | "down" | null
+  const [transparencyRating, setTransparencyRating] = useState(null);
   const [limeLoading, setLimeLoading] = useState(false);
   const [limeResult, setLimeResult] = useState(null);
   const [limeError, setLimeError] = useState(null);
@@ -39,6 +40,7 @@ export default function ScannerPage() {
     setScanText(log.scanned_text || "");
     setActiveLogId(log.id);
     setFeedbackSent(null);
+    setTransparencyRating(null);
     setLimeResult(null);
     setLimeError(null);
     setResult({
@@ -60,6 +62,7 @@ export default function ScannerPage() {
     setScanning(true);
     setResult(null);
     setFeedbackSent(null);
+    setTransparencyRating(null);
     setLimeResult(null);
     setLimeError(null);
     setActiveLogId(null);
@@ -92,6 +95,24 @@ export default function ScannerPage() {
       });
     } catch {
       setFeedbackSent(null); // let them retry if the call failed
+    }
+  };
+
+  const handleTransparencyRate = async (stars) => {
+    if (!result || !feedbackSent || transparencyRating) return;
+    setTransparencyRating(stars);
+    try {
+      await api.post("/api/feedback", {
+        source: "scan",
+        input_text: scanText,
+        output_decision: result.decision,
+        output_explanation: result.justification?.reasoning || "",
+        rating: feedbackSent,
+        transparency_rating: stars,
+      });
+    } catch {
+      setTransparencyRating(null);
+      toast.error("Failed to record rating.");
     }
   };
 
@@ -308,6 +329,13 @@ export default function ScannerPage() {
                   </button>
                 </div>
               </div>
+
+              {feedbackSent && (
+                <div className="flex items-center justify-between gap-3 bg-[#09090b] border border-zinc-800 rounded-xl p-3">
+                  <span className="text-xs text-zinc-500">Rate this explanation&apos;s transparency for audit sign-off</span>
+                  <StarRating value={transparencyRating} onRate={handleTransparencyRate} disabled={!!transparencyRating} />
+                </div>
+              )}
 
               {/* Opt-in real LIME — separate from the automatic attribution heatmap above,
                   which is IR/relevance-based, not perturbation LIME. */}

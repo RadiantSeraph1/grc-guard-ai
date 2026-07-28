@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Brain, Send, ShieldAlert, Sparkles, CheckCircle, XCircle, AlertTriangle, Fingerprint, GitMerge, FlipHorizontal, ThumbsUp, ThumbsDown, FlaskConical, Plus, Trash2, MessageSquare } from "lucide-react";
 import { useApi } from "../lib/api";
-import { PageContainer, PageHeader, Card, Button, cn } from "../components/ui";
+import { PageContainer, PageHeader, Card, Button, cn, StarRating } from "../components/ui";
 
 // Decisions come back as either a clean enum (COMPLIANT / NON_COMPLIANT /
 // ASSESSMENT_REQUIRES_MORE_INFORMATION) or free-form text ("Unable to
@@ -31,7 +31,7 @@ const DECISION_STATUS_STYLES = {
   neutral: { card: "bg-amber-950/20 border-amber-900/50", text: "text-amber-400", Icon: AlertTriangle, icon: "text-amber-500" },
 };
 
-function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState, onLimeExplain }) {
+function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, transparencyState, onTransparencyRate, limeState, onLimeExplain }) {
   if (!data) return null;
 
   // The backend might return string if it caught an error, or structured JSON for XAI
@@ -195,6 +195,13 @@ function XAIDashboard({ data, sourceQuery, feedbackState, onFeedback, limeState,
         </div>
       )}
 
+      {onFeedback && feedbackState && (
+        <div className="flex items-center justify-between gap-3 bg-zinc-900/30 border border-zinc-800/60 rounded-xl p-3">
+          <span className="text-xs text-zinc-500">Rate this explanation&apos;s transparency for audit sign-off</span>
+          <StarRating value={transparencyState} onRate={onTransparencyRate} disabled={!!transparencyState} />
+        </div>
+      )}
+
       {/* Opt-in real, perturbation-based LIME against the live provider —
           verifies (or contradicts) the self-reported attribution above. */}
       {onLimeExplain && (
@@ -244,6 +251,7 @@ export default function BrainPage() {
   const [activeId, setActiveId] = useState(null);
   const [history, setHistory] = useState([]);
   const [feedbackByIdx, setFeedbackByIdx] = useState({});
+  const [transparencyByIdx, setTransparencyByIdx] = useState({});
   const [limeByIdx, setLimeByIdx] = useState({});
   const bottomRef = useRef(null);
 
@@ -262,6 +270,7 @@ export default function BrainPage() {
     setActiveId(null);
     setHistory([]);
     setFeedbackByIdx({});
+    setTransparencyByIdx({});
     setLimeByIdx({});
   };
 
@@ -271,6 +280,7 @@ export default function BrainPage() {
       setActiveId(id);
       setHistory(Array.isArray(data.messages) ? data.messages : []);
       setFeedbackByIdx({});
+      setTransparencyByIdx({});
       setLimeByIdx({});
     } catch {
       startNewChat();
@@ -338,6 +348,24 @@ export default function BrainPage() {
       });
     } catch {
       setFeedbackByIdx((prev) => ({ ...prev, [idx]: null }));
+    }
+  };
+
+  const handleTransparencyRate = async (idx, userQuery, brainContent, stars) => {
+    const rating = feedbackByIdx[idx];
+    if (!rating || transparencyByIdx[idx]) return;
+    setTransparencyByIdx((prev) => ({ ...prev, [idx]: stars }));
+    try {
+      await api.post("/api/feedback", {
+        source: "brain",
+        input_text: userQuery,
+        output_decision: brainContent?.decision || "",
+        output_explanation: brainContent?.counterfactual || JSON.stringify(brainContent?.feature_attributions || []),
+        rating,
+        transparency_rating: stars,
+      });
+    } catch {
+      setTransparencyByIdx((prev) => ({ ...prev, [idx]: null }));
     }
   };
 
@@ -445,6 +473,8 @@ export default function BrainPage() {
                     sourceQuery={history[idx - 1]?.content}
                     feedbackState={feedbackByIdx[idx]}
                     onFeedback={(rating) => handleFeedback(idx, history[idx - 1]?.content || "", msg.content, rating)}
+                    transparencyState={transparencyByIdx[idx]}
+                    onTransparencyRate={(stars) => handleTransparencyRate(idx, history[idx - 1]?.content || "", msg.content, stars)}
                     limeState={limeByIdx[idx]}
                     onLimeExplain={() => handleLimeExplain(idx, history[idx - 1]?.content || "")}
                   />

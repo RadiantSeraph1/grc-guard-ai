@@ -372,6 +372,7 @@ class Feedback(Base):
     output_decision = Column(String, nullable=True)
     output_explanation = Column(String, nullable=True)  # full justification/reasoning text
     rating = Column(String, nullable=False)  # "up" | "down"
+    transparency_rating = Column(Integer, nullable=True)  # 1-5, auditor's explanation-quality score
     created_at = Column(Integer)
 
     organization = relationship("Organization", back_populates="feedback_entries")

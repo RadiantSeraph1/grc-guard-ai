@@ -61,6 +61,12 @@ def run_light_migrations():
                     conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_result_model VARCHAR"))
                 if "tuning_error" not in cols:
                     conn.execute(text("ALTER TABLE ai_provider_configs ADD COLUMN tuning_error VARCHAR"))
+
+        if "feedback" in tables:
+            cols = {c["name"] for c in inspector.get_columns("feedback")}
+            if "transparency_rating" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE feedback ADD COLUMN transparency_rating INTEGER"))
     except Exception as e:
         print(f"Light migration skipped: {e}")
 

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Search as SearchIcon, X, AlertTriangle, RotateCw, WifiOff } from "lucide-react";
+import { Search as SearchIcon, X, AlertTriangle, RotateCw, WifiOff, Star } from "lucide-react";
 import { Toaster as SonnerToaster, toast } from 'sonner';
 
 /**
@@ -279,6 +279,33 @@ export function ErrorState({ title = "Couldn't load this", description, onRetry,
       )}
       className={className}
     />
+  );
+}
+
+/** 1-5 star rating for auditor transparency scoring. Read-only once `value`
+ * is set (rating is a one-time judgment, not editable after submit). */
+export function StarRating({ value, onRate, disabled, size = 16 }) {
+  return (
+    <div className="flex items-center gap-1">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          disabled={disabled}
+          onClick={() => onRate?.(n)}
+          className={cn(
+            "transition-colors",
+            disabled ? "cursor-default" : "cursor-pointer hover:scale-110",
+          )}
+          title={`${n} star${n > 1 ? "s" : ""}`}
+        >
+          <Star
+            size={size}
+            className={value && n <= value ? "fill-amber-400 text-amber-400" : "text-zinc-700"}
+          />
+        </button>
+      ))}
+    </div>
   );
 }
 
